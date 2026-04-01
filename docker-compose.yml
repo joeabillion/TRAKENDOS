@@ -1,0 +1,62 @@
+version: '3.8'
+
+# Trakend OS Docker Compose
+# ==========================
+# Run the full Trakend OS stack in containers.
+# Usage: docker compose up -d
+#
+# This compose file runs Trakend OS itself as a Docker stack.
+# It also has access to the host Docker socket to manage host containers.
+# MariaDB is auto-deployed by the backend service via Docker API — no need
+# to define it here. The backend manages its lifecycle.
+
+services:
+  # Trakend OS Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: trakend-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker socket for container management
+      - trakend-data:/app/data                      # Persistent data (SQLite, logs)
+      - trakend-mysql:/var/lib/mysql                # MariaDB data persistence
+      - ./logo:/app/public/logo:ro                  # Logo files
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - JWT_SECRET=${JWT_SECRET:-change-this-secret-in-production}
+      - GIT_REPO_URL=${GIT_REPO_URL:-}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-trakend_db_root}
+    networks:
+      - trakend
+
+  # Trakend OS Frontend (Nginx serving built React app)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: trakend-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./logo:/usr/share/nginx/html/logo:ro        # Logo files
+    depends_on:
+      - backend
+    networks:
+      - trakend
+
+volumes:
+  trakend-data:
+    driver: local
+  trakend-mysql:
+    driver: local
+
+networks:
+  trakend:
+    driver: bridge

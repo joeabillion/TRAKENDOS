@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  trakend-os-backend:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      HOST: 0.0.0.0
+      FRONTEND_URL: http://localhost:3000
+      DB_PATH: /data/trakend.db
+      JWT_SECRET: ${JWT_SECRET:-development-secret-key}
+      DOCKER_SOCKET: /var/run/docker.sock
+      LOG_LEVEL: info
+      LOG_FILE: /logs/app.log
+      MAYA_ENABLED: "true"
+      OLLAMA_URL: http://ollama:11434
+      MAYA_MODEL: neural-chat
+      GIT_REPO_URL: https://github.com/trakend/trakend-os.git
+      GIT_BRANCH: main
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - trakend-data:/data
+      - trakend-logs:/logs
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    # Download model on startup
+    command: sh -c "ollama serve & sleep 5 && ollama pull neural-chat && wait"
+
+volumes:
+  trakend-data:
+    driver: local
+  trakend-logs:
+    driver: local
+  ollama-data:
+    driver: local
+
+networks:
+  default:
+    name: trakend-network
