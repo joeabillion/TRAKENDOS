@@ -1,6 +1,6 @@
 {
   "name": "trakend-os",
-  "version": "1.0.0",
+  "version": "1.0.000",
   "description": "Trakend OS - Server Management Platform",
   "private": true,
   "scripts": {

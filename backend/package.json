@@ -1,6 +1,6 @@
 {
   "name": "trakend-os-backend",
-  "version": "0.1.0",
+  "version": "1.0.000",
   "description": "Backend server for Trakend OS - an Unraid-like server management operating system",
   "main": "dist/index.js",
   "scripts": {

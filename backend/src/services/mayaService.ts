@@ -119,7 +119,7 @@ export class MayaService {
     const notifications = this.getNotifications();
     return {
       enabled: true,
-      version: '1.0.0',
+      version: '1.0.000',
       lastAction: this.actionQueue[this.actionQueue.length - 1],
       notificationCount: notifications.filter((n) => !n.dismissed).length,
     };

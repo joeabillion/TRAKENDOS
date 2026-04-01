@@ -301,8 +301,8 @@ const UpdatesSettings: React.FC = () => {
     <div className="max-w-2xl space-y-6">
       <div className="p-4 bg-trakend-surface border border-trakend-border rounded-lg">
         <div className="text-sm font-semibold text-trakend-text-primary mb-1">Current Version</div>
-        <div className="text-2xl font-bold text-trakend-accent">v1.0.0</div>
-        <p className="text-xs text-trakend-text-secondary mt-2">Released: January 1, 2024</p>
+        <div className="text-2xl font-bold text-trakend-accent">v1.0.000</div>
+        <p className="text-xs text-trakend-text-secondary mt-2">Released: March 31, 2026</p>
       </div>
 
       <div>
@@ -340,8 +340,8 @@ const UpdatesSettings: React.FC = () => {
         <h3 className="text-sm font-semibold text-trakend-text-primary mb-3">Update History</h3>
         <div className="space-y-2">
           <div className="p-2 bg-trakend-surface rounded text-sm">
-            <div className="text-trakend-text-primary">v1.0.0 - Latest</div>
-            <div className="text-xs text-trakend-text-secondary">Jan 1, 2024</div>
+            <div className="text-trakend-text-primary">v1.0.000 - Latest</div>
+            <div className="text-xs text-trakend-text-secondary">Mar 31, 2026</div>
           </div>
           <div className="p-2 bg-trakend-surface rounded text-sm">
             <div className="text-trakend-text-primary">v0.9.0</div>

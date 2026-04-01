@@ -135,9 +135,9 @@ export class UpdateService {
       const tag = execSync(`git -C ${this.repoPath} describe --tags --always`, {
         encoding: 'utf-8',
       }).trim();
-      return tag || '1.0.0';
+      return tag || '1.0.000';
     } catch {
-      return '1.0.0';
+      return '1.0.000';
     }
   }
 

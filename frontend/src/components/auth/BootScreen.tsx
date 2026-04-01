@@ -175,7 +175,7 @@ export const BootScreen: React.FC<BootScreenProps> = ({ onBootComplete }) => {
       {/* Version info */}
       <div className="absolute bottom-6 text-center">
         <p className="text-xs" style={{ color: 'rgba(160, 160, 160, 0.5)' }}>
-          Trakend OS v1.0.0 &mdash; Build {new Date().toISOString().split('T')[0].replace(/-/g, '')}
+          Trakend OS v1.0.000 &mdash; Build {new Date().toISOString().split('T')[0].replace(/-/g, '')}
         </p>
       </div>
 
