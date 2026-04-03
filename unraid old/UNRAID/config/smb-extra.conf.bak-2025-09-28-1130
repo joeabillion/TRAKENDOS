@@ -1,0 +1,26 @@
+
+[mc-live]
+    path = /mnt/user/mc-live
+    browseable = yes
+    public = yes
+    writeable = yes
+    force user = nobody
+    force group = users
+    create mask = 0666
+    directory mask = 0777
+    hide dot files = no
+    veto files = /._*/.DS_Store/
+
+[mc-live]
+    path = /mnt/user/mc-live
+    browseable = yes
+    public = yes
+    writeable = yes
+    force user = wings
+    force group = wings
+    create mask = 0664
+    directory mask = 2775
+    delete readonly = yes
+    dos filemode = yes
+    hide dot files = no
+    veto files = /._*/.DS_Store/

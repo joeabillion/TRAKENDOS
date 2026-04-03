@@ -1,0 +1,4 @@
+# Generated parity check schedule:
+0 12 * * * /usr/local/emhttp/webGui/scripts/parity_control pause &> /dev/null
+0 0 * * * [[ $(((($(date +%s)-$(grep -Pom1 "^sbSynced=\K.*" /proc/mdstat))/86400)%7)) -eq 0 ]] && /usr/local/emhttp/webGui/scripts/parity_control resume &> /dev/null || :
+0 0 1 * * /usr/local/sbin/mdcmd check NOCORRECT &> /dev/null

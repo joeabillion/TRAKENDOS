@@ -1,0 +1,7 @@
+/mnt/user/scripts/pterodactyl-realtime-sync.sh & Sync everything youve uploaded immediately
+rsync -av --delete /mnt/user/appdata/pterodactyl-servers/ /var/lib/pterodactyl/volumes/
+chown -R 988:988 /var/lib/pterodactyl/volumes/
+# Kill the real-time sync process
+pkill -f "pterodactyl-realtime-sync"
+
+# Check its stopped

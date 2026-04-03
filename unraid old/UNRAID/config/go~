@@ -1,0 +1,61 @@
+#!/bin/bash
+# Unraid Go File - runs at every boot
+
+# Wait for USB enclosure to spin up
+sleep 10
+
+# Rescan all SCSI hosts so USB enclosure disks appear
+for host in /sys/class/scsi_host/host*; do
+  echo "- - -" > "$host/scan"
+done
+
+# Start the Unraid WebGUI
+/usr/local/sbin/emhttp &
+
+# Ensure SSH is enabled
+chmod +x /etc/rc.d/rc.sshd 2>/dev/null || true
+/etc/rc.d/rc.sshd start 2>/dev/null || true
+
+# Raise inotify limits (helps Plex and Docker containers)
+sysctl -w fs.inotify.max_user_watches=1048576
+sysctl -w fs.inotify.max_user_instances=1024
+sysctl -w fs.inotify.max_queued_events=65536
+
+# Wait for Docker to be ready
+for i in {1..60}; do
+  if /etc/rc.d/rc.docker status >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+# Start containers in order (database first)
+docker start mariadb 2>/dev/null || true
+sleep 5
+
+docker start Redis 2>/dev/null || true
+docker start Pterodactyl-Panel 2>/dev/null || true
+sleep 10
+
+docker start wings 2>/dev/null || true
+docker start cloudflared 2>/dev/null || true
+docker start Plex-Media-Server 2>/dev/null || true
+
+# Log completion
+echo "$(date) go-file startup complete" >> /var/log/autostart.log
+
+# --- Fallback: ensure Docker is running ---
+for i in {1..60}; do
+  if /etc/rc.d/rc.docker status >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+if ! /etc/rc.d/rc.docker status >/dev/null 2>&1; then
+  mkdir -p /var/lib/docker
+  losetup -j /mnt/cache/system/docker/docker.img >/dev/null 2>&1 || losetup -fP /mnt/cache/system/docker/docker.img
+  LOOP=$(losetup -j /mnt/cache/system/docker/docker.img | awk -F: '{print $1}')
+  mount -t btrfs -o noatime,space_cache=v2 "$LOOP" /var/lib/docker 2>/dev/null || true
+  /etc/rc.d/rc.docker start
+fi

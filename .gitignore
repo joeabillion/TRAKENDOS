@@ -33,3 +33,25 @@ Thumbs.db
 # Temp files
 tmp/
 temp/
+
+# Unraid old — exclude large binaries, keep config text files
+unraid old/UNRAID/bz*
+unraid old/UNRAID/previous/
+unraid old/UNRAID/syslinux/
+unraid old/UNRAID/EFI/
+unraid old/UNRAID/ldlinux.*
+unraid old/UNRAID/memtest*
+unraid old/UNRAID/FSCK*
+unraid old/UNRAID/System Volume Information/
+unraid old/UNRAID/make_bootable*
+unraid old/UNRAID/license.txt
+unraid old/UNRAID/changes.txt
+unraid old/UNRAID/syslinux.cfg-
+# Exclude large plugin binaries (nvidia 369MB, pnpm 61MB, etc)
+*.txz
+*.tgz
+unraid old/UNRAID/config/plugins/*/pnpm*
+unraid old/UNRAID/config/plugins/nvidia-driver/packages/
+
+# ISO output
+installer/output/

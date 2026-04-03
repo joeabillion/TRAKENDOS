@@ -1,0 +1,26 @@
+{
+    "/boot/config/plugins/user.scripts/scripts/Daily HOMNAS Server Restart/script": {
+        "script": "/boot/config/plugins/user.scripts/scripts/Daily HOMNAS Server Restart/script",
+        "frequency": "custom",
+        "id": "scheduleDailyHOMNASServerRestart",
+        "custom": "0 4 * * *"
+    },
+    "/boot/config/plugins/user.scripts/scripts/delete_dangling_images/script": {
+        "script": "/boot/config/plugins/user.scripts/scripts/delete_dangling_images/script",
+        "frequency": "disabled",
+        "id": "scheduledelete_dangling_images",
+        "custom": ""
+    },
+    "/boot/config/plugins/user.scripts/scripts/delete.ds_store/script": {
+        "script": "/boot/config/plugins/user.scripts/scripts/delete.ds_store/script",
+        "frequency": "disabled",
+        "id": "scheduledelete-ds_store",
+        "custom": ""
+    },
+    "/boot/config/plugins/user.scripts/scripts/viewDockerLogSize/script": {
+        "script": "/boot/config/plugins/user.scripts/scripts/viewDockerLogSize/script",
+        "frequency": "disabled",
+        "id": "scheduleviewDockerLogSize",
+        "custom": ""
+    }
+}

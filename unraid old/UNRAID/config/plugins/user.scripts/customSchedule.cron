@@ -1,0 +1,3 @@
+# Generated cron schedule for user.scripts
+0 4 * * * /usr/local/emhttp/plugins/user.scripts/startCustom.php /boot/config/plugins/user.scripts/scripts/Daily HOMNAS Server Restart/script > /dev/null 2>&1
+

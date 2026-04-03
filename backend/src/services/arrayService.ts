@@ -648,10 +648,18 @@ export class ArrayService {
     this.logger.info('ARRAY', 'Starting array...');
 
     try {
-      // Format new drives that haven't been formatted
+      // Prepare new drives — only format if they don't already have a filesystem
       for (const assignment of dataDrives) {
         if (assignment.status === 'new') {
-          await this.formatDriveForArray(assignment.drive_id);
+          const drive = this.drives.get(assignment.drive_id);
+          const existingFs = drive ? this.getFilesystem(drive.device) : '';
+          if (existingFs) {
+            // Drive already has a filesystem (e.g. from Unraid) — use it as-is
+            this.logger.info('ARRAY', `${drive!.device} already has ${existingFs} filesystem — mounting as-is (no format)`);
+            drive!.filesystem = existingFs;
+          } else {
+            await this.formatDriveForArray(assignment.drive_id);
+          }
           this.db.prepare('UPDATE array_drives SET status = ? WHERE drive_id = ?').run('active', assignment.drive_id);
         }
       }

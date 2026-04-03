@@ -1,0 +1,31 @@
+#!/bin/bash
+# Unraid Go File - runs at every boot
+/usr/local/sbin/emhttp
+
+# Wait for USB enclosure to spin up
+sleep 10
+
+# Rescan all SCSI hosts so USB enclosure disks appear
+for host in /sys/class/scsi_host/host*; do
+  echo "- - -" > "$host/scan"
+done
+
+# Ensure SSH is enabled
+chmod +x /etc/rc.d/rc.sshd 2>/dev/null || true
+/etc/rc.d/rc.sshd start 2>/dev/null || true
+
+# Raise inotify limits (helps Plex and Docker containers)
+sysctl -w fs.inotify.max_user_watches=1048576
+sysctl -w fs.inotify.max_user_instances=1024
+sysctl -w fs.inotify.max_queued_events=65536
+
+# Log completion
+echo "$(date) go-file startup complete" >> /var/log/autostart.log
+
+# NVIDIA P40 GPU Optimization
+nvidia-smi -pm 1
+nvidia-smi -pl 250
+nvidia-smi -ac 3615,1531
+
+# Fix unraid-api JIT segfault
+cp /boot/config/ecosystem.config.json.override /usr/local/unraid-api/ecosystem.config.json

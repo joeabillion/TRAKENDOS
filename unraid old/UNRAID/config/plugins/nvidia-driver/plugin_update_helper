@@ -1,0 +1,718 @@
+# Plugin Update Helper by ich777 for unRAID
+# Plugin-Update-Helper version: 2025.04.28
+#
+# Currently supported Plugins:
+# AMD-Vendor-Reset: https://github.com/ich777/unraid-amd-vendor-reset
+# CoreFreq: https://github.com/ich777/unraid-corefreq
+# Coral-Driver: https://github.com/unraid/unraid-coral-driver
+# HPSAHBA-Patch: https://github.com/ich777/unraid-hpsahba
+# Sound-Driver: https://github.com/ich777/unraid-sound-driver
+# DVB-Driver: https://github.com/unraid/unraid-dvb-driver
+# Nvidia-Driver: https://github.com/unraid/unraid-nvidia-driver
+# USB Manager USBIP Addon: https://github.com/SimonFair/USB_Manager_USBIP_addon
+# Unraid OpenRGB Patch: https://github.com/ich777/unraid-openrgb-patch
+# QNAP-EC: https://github.com/ich777/unraid-qnapec
+# NCT6687: https://github.com/ich777/unraid-nct6687-driver
+# IT87: https://github.com/ich777/unraid-it87-driver
+# R8125, R8126, R8152, R8168: https://github.com/jinlife/unraid-r8125-r8152-driver
+# Intel Graphics SR-IOV: https://github.com/giganode/unraid-i915-sriov
+# asustor Platfrom Drivers: https://github.com/Terebi42/unraid-asustor-pfd
+# UGREEN LED Driver: https://github.com/ich777/unraid-ugreenleds-driver
+# Hailo RT Driver: https://github.com/ich777/unraid-hailort-driver
+# MemryX Driver: https://github.com/ich777/unraid-memryx-driver
+
+if [ ! -f /boot/changes.txt ]; then
+  /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "Error: Plugin Update Helper can't start! Can't find file /boot/changes.txt" -i "alert"
+  exit 1
+fi
+while inotifywait -q /boot/changes.txt -e move_self,delete_self,modify >/dev/null 2>&1
+do
+  # Wait for /boot/changes.txt to be available or error out after 10 seconds
+  retries=0
+  while [ ! -f /boot/changes.txt ]; do
+    if [ ${retries} -ge 4 ]; then
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "Error: Timed out waiting for /boot/changes.txt!"  -i "alert"
+      exit 1
+    fi
+    sleep 2
+    ((retries++))
+  done
+  unset retries
+  sleep 2
+
+  # Set Variables
+  CUR_KERNEL_V="$(uname -r)"
+
+  if command -v pcregrep >/dev/null 2>&1; then
+    NEW_KERNEL_V="$(pcregrep -oM '#?#? ?Linux kernel[\s]*?(-|\*)? ?version:?\s+\K\d+(\.\d+)+' /boot/changes.txt | sort -V | tail -1)-Unraid"
+  else
+    NEW_KERNEL_V="$(grep -E -A2 "Linux kernel" /boot/changes.txt | grep -E "version" | awk '{print $3}' | grep "^[0-9]" | sort -V | tail -1)-Unraid"
+  fi
+  if [ -z "${NEW_KERNEL_V}" ]; then
+    NEW_KERNEL_V="$(grep -E -A2 "Linux kernel" /boot/changes.txt | grep -E "Unraid" | awk '{print $3}' | grep "^[0-9]" | sort -V | tail -1)"
+  fi
+  if [ -z "${NEW_KERNEL_V%%-*}" ]; then
+    /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "Something went horrybly wrong, can't fetch new unRAID Kernel version, please reboot your Server and make sure that you have a active Internet connection on boot without any AdBlocking softwar infront of it!"  -i "alert"
+    exit 1
+  fi
+  NEW_UNRAID_V="$(head -2 /boot/changes.txt | grep -E "Version" | awk '{print $3}' | sort -V | tail -1)"
+
+  # Check if Kernel version changed, notify user if so
+  if [ "${CUR_KERNEL_V%%-*}" == "${NEW_KERNEL_V%%-*}" ]; then
+    /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "All plugins are up-to-date for unRAID v${NEW_UNRAID_V}, please reboot!"
+    exit 0
+  elif [ -z "${NEW_KERNEL_V%%-*}" ]; then
+    exit 1
+  else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "unRAID version change detected, please don't reboot just yet! Download from plugin(s) for new unRAID v${NEW_UNRAID_V} started in background! You will be notified when the download(s) is/are finished!"
+  fi
+
+  if [ -f "/boot/config/plugins/amd-vendor-reset.plg" ]; then
+    PLUGIN_NAME="AMD-Vendor-Reset"
+    PACKAGE="gnif_vendor_reset"
+    DL_URL="https://github.com/ich777/unraid-amd-vendor-reset/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-amd-vendor-reset/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-amd-vendor-reset/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/amd-vendor-reset/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/amd-vendor-reset/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/amd-vendor-reset/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/amd-vendor-reset/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/amd-vendor-reset/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/amd-vendor-reset/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/amd-vendor-reset/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/amd-vendor-reset/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/corefreq.plg" ]; then
+    PLUGIN_NAME="CoreFreq"
+    VENDOR=$(lscpu | awk '/Vendor ID/{print $3}' | head -1)
+    if [ "${VENDOR}" == "GenuineIntel" ]; then
+      VENDOR="INTEL"
+    elif [ "${VENDOR}" == "AuthenticAMD" ]; then
+       VENDOR="AMD"
+    fi
+    PACKAGE="corefreq_${VENDOR}"
+    DL_URL="https://github.com/ich777/unraid-corefreq/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-corefreq/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-corefreq/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    if [ -z "${LAT_PACKAGE}" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} Error: Can't get latest version!" -i "alert"
+    else
+      mkdir -p "/boot/config/plugins/corefreq/packages/${NEW_KERNEL_V%%-*}"
+      if wget -q -nc -O "/boot/config/plugins/corefreq/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+        wget -q -nc -O "/boot/config/plugins/corefreq/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+        if [ "$(md5sum /boot/config/plugins/corefreq/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/corefreq/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+          /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} v$(echo $LAT_PACKAGE | cut -d '-' -f2) download failed: Checksum Error!" -i "alert"
+          rm -rf /boot/config/plugins/corefreq/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+          ERROR+="${PLUGIN_NAME}, "
+        else
+          /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} v$(echo $LAT_PACKAGE | cut -d '-' -f2) download successful!"
+          rm -rf $(ls -d /boot/config/plugins/corefreq/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+          rm -rf $(find /boot/config/plugins/corefreq/packages/${NEW_KERNEL_V%%-*}/ -type f -maxdepth 1 | grep -v "${LAT_PACKAGE}")
+        fi
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} v$(echo $LAT_PACKAGE | cut -d '-' -f2) download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+        rm -rf /boot/config/plugins/corefreq/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      fi
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/coral-driver.plg" ]; then
+    PLUGIN_NAME="Coral-Driver"
+    PACKAGE="Coral"
+    DL_URL="https://github.com/unraid/unraid-coral-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/unraid/unraid-coral-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/unraid/unraid-coral-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/coral-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/coral-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/coral-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/coral-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/coral-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/coral-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/coral-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/coral-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/hpsahba.plg" ]; then
+    PLUGIN_NAME="HPSAHBA"
+    PACKAGE="hpsahba"
+    DL_URL="https://github.com/ich777/unraid-hpsahba/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-hpsahba/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-hpsahba/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/hpsahba/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/hpsahba/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/hpsahba/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/hpsahba/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/hpsahba/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/hpsahba/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/hpsahba/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/hpsahba/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/sound-driver.plg" ]; then
+    PLUGIN_NAME="Sound-Driver"
+    PACKAGE="sound"
+    DL_URL="https://github.com/ich777/unraid-sound-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-sound-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-sound-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/sound-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/sound-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/sound-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/sound-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/sound-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/sound-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/sound-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/sound-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/dvb-driver.plg" ]; then
+    PLUGIN_NAME="DVB Driver"
+    PACKAGE="$(grep "dvb_package" "/boot/config/plugins/dvb-driver/settings.cfg" | cut -d '=' -f2)"
+    DL_URL="https://github.com/unraid/unraid-dvb-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/unraid/unraid-dvb-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/unraid/unraid-dvb-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/dvb-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/dvb-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/dvb-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/dvb-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/dvb-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} '${PACKAGE}' download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/dvb-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} '${PACKAGE}' download successful!"
+        rm -rf $(ls -d /boot/config/plugins/dvb-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+        rm -rf $(find /boot/config/plugins/dvb-driver/packages/${NEW_KERNEL_V%%-*}/ -type f -maxdepth 1 | grep -v "${PACKAGE}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} '${PACKAGE}' download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/dvb-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/nvidia-driver.plg" ]; then
+    PLUGIN_NAME="Nvidia Driver"
+    SET_DRV_V="$(grep "driver_version" "/boot/config/plugins/nvidia-driver/settings.cfg" | cut -d '=' -f2)"
+    if [ "${SET_DRV_V}" == "latest_nos" ]; then
+      PACKAGE="nvos"
+      OS="Open Source "
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/unraid/unraid-nvidia-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep -E -v '\.md5$' | grep "${PACKAGE}" | sort -V | tail -1)"
+    else
+      PACKAGE="nvidia"
+      DRIVER_AVAIL="$(wget -qO- https://api.github.com/repos/unraid/unraid-nvidia-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V)"
+      if [ -z "${DRIVER_AVAIL}" ]; then
+        sleep 2
+        DRIVER_AVAIL="$(wget -qO- https://api.github.com/repos/unraid/unraid-nvidia-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V)"
+      fi
+      BRANCHES="$(wget -qO- https://raw.githubusercontent.com/unraid/unraid-nvidia-driver/master/versions.json | jq -r '.branches')"
+    fi
+    DL_URL="https://github.com/unraid/unraid-nvidia-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+
+    if [ "${SET_DRV_V}" == "latest" ]; then
+      LAT_PACKAGE="$(echo "$DRIVER_AVAIL" | tail -1)"
+    elif [ "${SET_DRV_V}" == "latest_prb" ]; then
+      LAT_PRB_AVAIL="$(echo "$BRANCHES" | jq -r '.production[]' | sort -V)"
+      LAT_PACKAGE="$(comm -12 <(echo "$DRIVER_AVAIL" | cut -d '-' -f2 | awk -F '.' '{printf "%d.%03d.%d\n", $1,$2,$3}' | awk -F '.' '{printf "%d.%03d.%02d\n", $1,$2,$3}') <(echo "$LAT_PRB_AVAIL" | awk -F '.' '{printf "%d.%03d.%d\n", $1,$2,$3}' | awk -F '.' '{printf "%d.%03d.%02d\n", $1,$2,$3}') | sort -V | tail -1 | awk -F '.' '{printf "%d.%02d.%02d\n", $1,$2,$3}' | awk '{sub(/\.0+$/,"")}1')"
+      LAT_PACKAGE="$(echo "$DRIVER_AVAIL" | grep "$LAT_PACKAGE")"
+      if [ -z "${LAT_PACKAGE}" ]; then
+        LAT_PACKAGE="$(echo "$DRIVER_AVAIL" | tail -1)"
+        sed -i '/driver_version=/c\driver_version=latest' "/boot/config/plugins/nvidia-driver/settings.cfg"
+      fi
+    elif [ "${SET_DRV_V}" == "latest_nfb" ]; then
+      LAT_NFB_AVAIL="$(echo "$BRANCHES" | jq -r '.newfeature[]' | sort -V)"      
+      LAT_PACKAGE="$(comm -12 <(echo "$DRIVER_AVAIL" | cut -d '-' -f2 | awk -F '.' '{printf "%d.%03d.%d\n", $1,$2,$3}' | awk -F '.' '{printf "%d.%03d.%02d\n", $1,$2,$3}') <(echo "$LAT_NFB_AVAIL" | awk -F '.' '{printf "%d.%03d.%d\n", $1,$2,$3}' | awk -F '.' '{printf "%d.%03d.%02d\n", $1,$2,$3}') | sort -V | tail -1 | awk -F '.' '{printf "%d.%02d.%02d\n", $1,$2,$3}' | awk '{sub(/\.0+$/,"")}1')"
+      LAT_PACKAGE="$(echo "$DRIVER_AVAIL" | grep "$LAT_PACKAGE")"
+    if [ -z "${LAT_PACKAGE}" ]; then
+        LAT_PACKAGE="$(echo "$DRIVER_AVAIL" | tail -1)"
+        sed -i '/driver_version=/c\driver_version=latest' "/boot/config/plugins/nvidia-driver/settings.cfg"
+      fi
+    elif [ "${SET_DRV_V}" == "latest_nos" ]; then
+      if [ -z "${LAT_PACKAGE}" ]; then
+        PACKAGE="nvidia"
+        unset OS
+        LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/unraid/unraid-nvidia-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+        sed -i '/driver_version=/c\driver_version=latest' "/boot/config/plugins/nvidia-driver/settings.cfg"
+      fi
+    else
+      if [[ "${SET_DRV_V}" = 47* ]]; then
+        LAT_PACKAGE="$(echo "$DRIVER_AVAIL" | grep "\-47*" | sort -V | tail -1)"
+        if [ -z "${LAT_PACKAGE}" ]; then
+          LAT_PACKAGE="$(echo "$DRIVER_AVAIL" | grep "$SET_DRV_V")"
+        else
+          sed -i "/driver_version=/c\driver_version=$(echo $LAT_PACKAGE | cut -d '-' -f2)" "/boot/config/plugins/nvidia-driver/settings.cfg"
+        fi
+      else
+        LAT_PACKAGE="$(echo "$DRIVER_AVAIL" | grep "$SET_DRV_V")"
+      fi
+      if [ -z "${LAT_PACKAGE}" ]; then
+        LAT_PACKAGE="$(echo "$DRIVER_AVAIL" | tail -1)"
+        sed -i '/driver_version=/c\driver_version=latest' "/boot/config/plugins/nvidia-driver/settings.cfg"
+      fi
+    fi
+    mkdir -p "/boot/config/plugins/nvidia-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/nvidia-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/nvidia-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/nvidia-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/nvidia-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} ${OS}v$(echo $LAT_PACKAGE | cut -d '-' -f2) download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/nvidia-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} ${OS}v$(echo $LAT_PACKAGE | cut -d '-' -f2) download successful!"
+        rm -rf $(ls -d /boot/config/plugins/nvidia-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+        rm -rf $(find /boot/config/plugins/nvidia-driver/packages/${NEW_KERNEL_V%%-*}/ -type f -maxdepth 1 | grep -v "${PACKAGE}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} ${OS}v$(echo $LAT_PACKAGE | cut -d '-' -f2) download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/nvidia-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/usb_manager_usbip_addon.plg" ]; then
+    PLUGIN_NAME="USB Manager USBIP Addon"
+    PACKAGE="usbip"	
+    DL_URL="https://github.com/SimonFair/USB_Manager_USBIP_addon/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/SimonFair/USB_Manager_USBIP_addon/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/SimonFair/USB_Manager_USBIP_addon/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/Usb_manager_usbip_addon/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/Usb_manager_usbip_addon/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/Usb_manager_usbip_addon/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/Usb_manager_usbip_addon/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/Usb_manager_usbip_addon/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/Usb_manager_usbip_addon/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+          /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+          rm -rf $(ls -d /boot/config/plugins/Usb_manager_usbip_addon/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/Usb_manager_usbip_addon/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/openrgb-patch.plg" ]; then
+    PLUGIN_NAME="OpenRGB Patch"
+    PACKAGE="openrgb_patch"
+    DL_URL="https://github.com/ich777/unraid-openrgb-patch/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-openrgb-patch/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-openrgb-patch/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/openrgb-patch/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/openrgb-patch/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/openrgb-patch/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/openrgb-patch/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/openrgb-patch/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/openrgb-patch/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/openrgb-patch/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/openrgb-patch/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/qnap-ec.plg" ]; then
+    PLUGIN_NAME="QNAP-EC"
+    PACKAGE="qnapec"
+    DL_URL="https://github.com/ich777/unraid-qnapec/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-qnapec/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-qnapec/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/qnap-ec/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/qnap-ec/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/qnap-ec/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/qnap-ec/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/qnap-ec/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/qnap-ec/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/qnap-ec/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/qnap-ec/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/nct6687-driver.plg" ]; then
+    PLUGIN_NAME="NCT6687"
+    PACKAGE="nct6687d"
+    DL_URL="https://github.com/ich777/unraid-nct6687-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-nct6687-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-nct6687-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/nct6687-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/nct6687-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/nct6687-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/nct6687-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/nct6687-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/nct6687-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/nct6687-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/nct6687-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/it87-driver.plg" ]; then
+    PLUGIN_NAME="IT87"
+    PACKAGE="it87"
+    DL_URL="https://github.com/ich777/unraid-it87-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-it87-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-it87-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/it87-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/it87-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/it87-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/it87-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/it87-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/it87-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/it87-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/it87-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/unraid-r8125.plg" ]; then
+    PLUGIN_NAME="RTL8125(B)"
+    PACKAGE="r8125"
+    DL_URL="https://github.com/jinlife/unraid-r8125-r8152-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/jinlife/unraid-r8125-r8152-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/jinlife/unraid-r8125-r8152-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/r8125-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/r8125-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/r8125-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/r8125-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/r8125-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/r8125-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+     else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/r8125-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/r8125-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/unraid-r8126.plg" ]; then
+    PLUGIN_NAME="RTL8126"
+    PACKAGE="r8126"
+    DL_URL="https://github.com/jinlife/unraid-r8125-r8152-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/jinlife/unraid-r8125-r8152-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/jinlife/unraid-r8125-r8152-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/r8126-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/r8126-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/r8126-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/r8126-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/r8126-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/r8126-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+     else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/r8126-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/r8126-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/unraid-r8152.plg" ]; then
+    PLUGIN_NAME="RTL8156(B)"
+    PACKAGE="r8152"
+    DL_URL="https://github.com/jinlife/unraid-r8125-r8152-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/jinlife/unraid-r8125-r8152-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/jinlife/unraid-r8125-r8152-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/r8152-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/r8152-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/r8152-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/r8152-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/r8152-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/r8152-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/r8152-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/r8152-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/unraid-r8168.plg" ]; then
+    PLUGIN_NAME="RTL8168"
+    PACKAGE="r8168"
+    DL_URL="https://github.com/jinlife/unraid-r8125-r8152-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/jinlife/unraid-r8125-r8152-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/jinlife/unraid-r8125-r8152-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/r8168-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/r8168-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/r8168-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/r8168-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/r8168-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/r8168-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/r8168-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/r8168-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/i915-sriov.plg" ]; then
+    PLUGIN_NAME="Intel SR-IOV"
+    PACKAGE="i915-sriov"
+    DL_URL="https://github.com/giganode/unraid-i915-sriov/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/giganode/unraid-i915-sriov/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/giganode/unraid-i915-sriov/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/i915-sriov/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/i915-sriov/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/i915-sriov/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/i915-sriov/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/i915-sriov/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/i915-sriov/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/i915-sriov/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/i915-sriov/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/unraid-asustorpfd.plg" ]; then
+    PLUGIN_NAME="asustor Platform Drivers"
+    PACKAGE="asustor_pfd"
+    DL_URL="https://github.com/Terebi42/unraid-asustor-pfd/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/Terebi42/unraid-asustor-pfd/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/Terebi42/unraid-asustor-pfd/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/asustorpfd/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/asustorpfd/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/asustorpfd/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/asustorpfd/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/asustorpfd/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/asustorpfd/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/asustorpfd/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/asustorpfd/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/ugreenleds-driver.plg" ]; then
+    PLUGIN_NAME="UGREEN LED Driver"
+    PACKAGE="ugreen_leds"
+    DL_URL="https://github.com/ich777/unraid-ugreenleds-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-ugreenleds-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-ugreenleds-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/ugreenleds-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/ugreenleds-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/ugreenleds-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/ugreenleds-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/ugreenleds-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/ugreenleds-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/ugreenleds-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/ugreenleds-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/hailort-driver.plg" ]; then
+    PLUGIN_NAME="Hailo RT Driver"
+    PACKAGE="hailort_driver"
+    DL_URL="https://github.com/ich777/unraid-hailort-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    DRV_V="$(cat /boot/config/plugins/hailort-driver/settings.cfg | grep "driver_version" | cut -d '=' -f2 | sed 's/\"//g')"
+    PACKAGES="$(wget -qO- https://api.github.com/repos/ich777/unraid-hailort-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V)"
+    if [ -z "${PACKAGES}" ]; then
+      sleep 2
+      PACKAGES="$(wget -qO- https://api.github.com/repos/ich777/unraid-hailort-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V)"
+    fi
+    mkdir -p "/boot/config/plugins/hailort-driver/packages/${NEW_KERNEL_V%%-*}"
+    if [ "${DRV_V}" == "latest" ]; then
+      PACKAGE="$(echo "${PACKAGES}" | sort -V | tail -1)"
+    else
+      PACKAGE="$(grep "${DRV_V}" <<< "${PACKAGES}")"
+      if [ -z "${PACKAGE}" ]; then
+        PACKAGE="$(echo "${PACKAGES}" | sort -V | tail -1)"
+        sed -i '/driver_version=/c\driver_version=latest' /boot/config/plugins/hailort-driver/settings.cfg
+      fi
+    fi
+    if wget -q -nc -O "/boot/config/plugins/hailort-driver/packages/${NEW_KERNEL_V%%-*}/${PACKAGE}" "${DL_URL}/${PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/hailort-driver/packages/${NEW_KERNEL_V%%-*}/${PACKAGE}.md5" "${DL_URL}/${PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/hailort-driver/packages/${NEW_KERNEL_V%%-*}/${PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/hailort-driver/packages/${NEW_KERNEL_V%%-*}/${PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/hailort-driver/packages/${NEW_KERNEL_V%%-*}/${PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/hailort-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/hailort-driver/packages/${NEW_KERNEL_V%%-*}/${PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  if [ -f "/boot/config/plugins/memryx-driver.plg" ]; then
+    PLUGIN_NAME="MemryX Driver"
+    PACKAGE="memryx"
+    DL_URL="https://github.com/ich777/unraid-memryx-driver/releases/download/${NEW_KERNEL_V%%-*}-Unraid"
+    LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-memryx-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    if [ -z "${LAT_PACKAGE}" ]; then
+      sleep 2
+      LAT_PACKAGE="$(wget -qO- https://api.github.com/repos/ich777/unraid-memryx-driver/releases/tags/${NEW_KERNEL_V%%-*}-Unraid | jq -r '.assets[].name' | grep "${PACKAGE}" | grep -E -v '\.md5$' | sort -V | tail -1)"
+    fi
+    mkdir -p "/boot/config/plugins/memryx-driver/packages/${NEW_KERNEL_V%%-*}"
+    if wget -q -nc -O "/boot/config/plugins/memryx-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}" "${DL_URL}/${LAT_PACKAGE}" 2>/dev/null ; then
+      wget -q -nc -O "/boot/config/plugins/memryx-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5" "${DL_URL}/${LAT_PACKAGE}.md5"
+      if [ "$(md5sum /boot/config/plugins/memryx-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE} | awk '{print $1}')" != "$(cat /boot/config/plugins/memryx-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}.md5 | awk '{print $1}')" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed: Checksum Error!" -i "alert"
+        rm -rf /boot/config/plugins/memryx-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+        ERROR+="${PLUGIN_NAME}, "
+      else
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download successful!"
+        rm -rf $(ls -d /boot/config/plugins/memryx-driver/packages/* | grep -v "${NEW_KERNEL_V%%-*}")
+      fi
+    else
+      /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "${PLUGIN_NAME} download failed, please go to the support thread for this plugin and make a post with a screenshot from this error!" -i "alert"
+      rm -rf /boot/config/plugins/memryx-driver/packages/${NEW_KERNEL_V%%-*}/${LAT_PACKAGE}*
+	  ERROR+="${PLUGIN_NAME}, "
+    fi
+  fi
+
+  sleep 2
+  if [ -z "${ERROR}" ]; then
+    /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "Everything done, please reboot to install unRAID v${NEW_UNRAID_V}!" -l "Main"
+  else
+    /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Plugin Update Helper" -d "Download from plugin package(s): ${ERROR%,*} for unRAID v${NEW_UNRAID_V} failed! Please visit the support thread(s) before rebooting to avoid plugin issues!" -l "https://forums.unraid.net" -i "alert"
+  fi
+  sleep 2
+  exit 0
+done

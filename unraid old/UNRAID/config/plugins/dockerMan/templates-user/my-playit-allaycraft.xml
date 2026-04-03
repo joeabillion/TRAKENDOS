@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>playit-allaycraft</Name>
+  <Repository>ghcr.io/playit-cloud/playit-agent:0.16</Repository>
+  <Registry>https://hub.docker.com/r/pepaondrugs/playitgg-docker</Registry>
+  <Network>host</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://hub.docker.com/r/pepaondrugs/playitgg-docker/</Support>
+  <Project>https://playit.gg/</Project>
+  <Overview>playit.gg is a global proxy that allows you to host a server without port forwarding. After installing please have a look at the logs to use it</Overview>
+  <Category>Tools:Utilities Other: Network:Proxy</Category>
+  <WebUI/>
+  <TemplateURL>https://raw.githubusercontent.com/PepaonDrugs/unraid-templates/main/playitgg/playitgg.xml</TemplateURL>
+  <Icon>https://i.imgur.com/HF2JYkI.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled>1758408551</DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="AppData" Target="/root/.config/playit_gg/" Default="" Mode="rw" Description="" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/playitgg</Config>
+  <Config Name="Host Key 1" Target="SECRET_KEY" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">895232634ed62cdedcede30a5b9861cdbfd8c5949fb08b2b604a1f2112314e53</Config>
+  <TailscaleStateDir/>
+</Container>

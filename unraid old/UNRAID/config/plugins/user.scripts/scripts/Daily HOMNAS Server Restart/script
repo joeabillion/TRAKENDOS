@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "Scheduled daily Docker restart at $(date)"
+docker restart ollama ollama-maya maya maya-ai trakend-web trakend-db cloudflared pelican-panel pelican-wings mariadb Redis
+echo "Docker restart complete at $(date)"

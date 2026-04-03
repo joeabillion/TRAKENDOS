@@ -1,0 +1,9 @@
+{
+  "version": "4.29.2+c39b0b26",
+  "extraOrigins": [],
+  "sandbox": false,
+  "ssoSubIds": [],
+  "plugins": [
+    "unraid-api-plugin-connect"
+  ]
+}

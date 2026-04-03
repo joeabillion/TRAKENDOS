@@ -1,0 +1,6 @@
+# Crontab for Disk Location plugin to retrieve SMART data, power status and run backup in the background.
+56 */12 * * * php -f /usr/local/emhttp/plugins/disklocation/pages/cronjob.php start silent &> /dev/null
+*/5 * * * * php -f /usr/local/emhttp/plugins/disklocation/pages/cronjob.php start status silent &> /dev/null
+*/5 * * * * php -f /usr/local/emhttp/plugins/disklocation/pages/cronjob.php start syslogread silent &> /dev/null
+0 0 * * * php -f /usr/local/emhttp/plugins/disklocation/pages/page_system.php backup auto silent &> /dev/null
+0 5 1 * * php -f /usr/local/emhttp/plugins/disklocation/pages/benchmark.php auto silent &> /dev/null

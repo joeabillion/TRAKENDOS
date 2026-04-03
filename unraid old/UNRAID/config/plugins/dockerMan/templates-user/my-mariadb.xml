@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>mariadb</Name>
+  <Repository>lscr.io/linuxserver/mariadb</Repository>
+  <Registry>https://github.com/orgs/linuxserver/packages/container/package/mariadb</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/linuxserver/docker-mariadb/issues/new/choose</Support>
+  <Project>https://mariadb.org/</Project>
+  <Overview>Mariadb(https://mariadb.org/) is one of the most popular database servers. Made by the original developers of MySQL.</Overview>
+  <Category>Tools:Utilities Network:Management</Category>
+  <WebUI/>
+  <TemplateURL>https://raw.githubusercontent.com/linuxserver/templates/main/unraid/mariadb.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/mariadb-logo.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled>1758360140</DateInstalled>
+  <DonateText>Donations</DonateText>
+  <DonateLink>https://www.linuxserver.io/donate</DonateLink>
+  <Requires/>
+  <Config Name="WebUI" Target="3306" Default="3306" Mode="tcp" Description="MariaDB listens on this port." Type="Port" Display="always" Required="true" Mask="false">3306</Config>
+  <Config Name="MYSQL_ROOT_PASSWORD" Target="MYSQL_ROOT_PASSWORD" Default="ROOT_ACCESS_PASSWORD" Mode="" Description="Set this to root password for installation (minimum 4 characters and non-alphanumeric passwords must be properly escaped). (valid only for first run)" Type="Variable" Display="always" Required="true" Mask="true">W7r$2pBv9q!XeL4n</Config>
+  <Config Name="MYSQL_DATABASE" Target="MYSQL_DATABASE" Default="USER_DB_NAME" Mode="{3}" Description="Specify the name of a database to be created. (valid only for first run)" Type="Variable" Display="always" Required="false" Mask="false">USER_DB_NAME</Config>
+  <Config Name="MYSQL_USER" Target="MYSQL_USER" Default="MYSQL_USER" Mode="{3}" Description="This user will have superuser access to the database specified by MYSQL_DATABASE (do not use root here). (valid only for first run)" Type="Variable" Display="always" Required="false" Mask="false">MYSQL_USER</Config>
+  <Config Name="MYSQL_PASSWORD" Target="MYSQL_PASSWORD" Default="DATABASE_PASSWORD" Mode="" Description="Set this to the password you want to use for you MYSQL_USER (minimum 4 characters and non-alphanumeric passwords must be properly escaped). (valid only for first run)" Type="Variable" Display="always" Required="false" Mask="true">W7r$2pBv9q!XeL4n</Config>
+  <Config Name="REMOTE_SQL" Target="REMOTE_SQL" Default="http://URL1/your.sql,https://URL2/your.sql" Mode="{3}" Description="Set this to ingest sql files from an http/https endpoint (comma seperated array)." Type="Variable" Display="always" Required="false" Mask="false">http://URL1/your.sql,https://URL2/your.sql</Config>
+  <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/mariadb" Mode="rw" Description="Persistent config files" Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/mariadb</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="{3}" Description="" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="{3}" Description="" Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="{3}" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+  <TailscaleStateDir/>
+</Container>

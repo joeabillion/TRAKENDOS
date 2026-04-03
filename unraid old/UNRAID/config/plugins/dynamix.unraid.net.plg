@@ -1,0 +1,597 @@
+<?xml version="1.0" standalone="yes"?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name "dynamix.unraid.net">
+<!ENTITY launch "Connect">
+<!ENTITY author "limetech">
+<!ENTITY version "2025.12.19.2020">
+<!ENTITY plugin_url "https://stable.dl.unraid.net/unraid-api/dynamix.unraid.net.plg">
+<!ENTITY source "/boot/config/plugins/dynamix.my.servers/&txz_name;">
+<!ENTITY txz_sha256 "8a199aceab44bec46123cd8b88381b95c83b4c9f5d8820fc40106af7d122e00b">
+<!ENTITY txz_url "https://stable.dl.unraid.net/unraid-api/dynamix.unraid.net-4.29.2-x86_64-1.txz">
+<!ENTITY txz_name "dynamix.unraid.net-4.29.2-x86_64-1.txz">
+<!ENTITY arch "x86_64">
+<!ENTITY build "1">
+<!ENTITY tag "">
+<!ENTITY api_version "4.29.2">
+]>
+<!-- Plugin min version is lower than the actual min version of Connect (6.12.0) to facilitate cleanup on newly unsupported versions. -->
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&plugin_url;" launch="&launch;" min="6.9.0-rc1" icon="globe" support="https://forums.unraid.net/forum/94-support/">
+  <CHANGES>
+## [4.29.2](https://github.com/unraid/api/compare/v4.29.1...v4.29.2) (2025-12-19)
+
+
+### Bug Fixes
+
+* unraid-connect plugin not loaded when connect is installed ([#1856](https://github.com/unraid/api/issues/1856)) ([73135b8](https://github.com/unraid/api/commit/73135b832801f5c76d60020161492e4770958c3d))
+
+</CHANGES>
+  <!-- Check disk space before installation -->
+  <FILE Run="/bin/bash" Method="install">
+    <INLINE><![CDATA[
+# Check available disk space on /usr
+echo -n "Checking disk space on /usr... "
+FREE_SPACE=$(df -m /usr | awk 'NR==2 {print $4}')
+if [ -z "$FREE_SPACE" ]; then
+  echo "⚠️ Error: Unable to determine free space on /usr"
+  exit 1
+fi
+
+if [ "$FREE_SPACE" -lt 300 ]; then
+  echo "⚠️ Error: Insufficient disk space on /usr. Need at least 300MB free, only ${FREE_SPACE}MB available"
+  exit 1
+fi
+echo "ok. (${FREE_SPACE}MB free)"
+
+exit 0
+]]></INLINE>
+  </FILE>
+  <!-- download main txz -->
+  <FILE Name="&source;">
+    <URL>&txz_url;</URL>
+    <SHA256>&txz_sha256;</SHA256>
+  </FILE>
+  <!-- Check for compatible Unraid version -->
+  <FILE Run="/usr/bin/php" Method="install">
+    <INLINE><![CDATA[
+<?php
+// Check Unraid version
+$version = @parse_ini_file('/etc/unraid-version', true)['version'];
+
+// Check if this is a recommended version
+// - Should be 6.12.15 or higher
+// - Should not be a 6.12.15 beta/rc version
+$is_stable_6_12_or_higher = version_compare($version, '6.12.15', '>=') && !preg_match('/^6\\.12\\.15-/', $version);
+
+if ($is_stable_6_12_or_higher) {
+  echo "Running on supported version {$version}\n";
+  exit(0);
+}
+
+echo "Warning: Unsupported Unraid version {$version}. This plugin requires Unraid 6.12.15 or higher.\n";
+echo "The plugin may not function correctly on this system. It may stop working entirely in the future.\n";
+echo "⚠️ Please uninstall this plugin or upgrade to a newer version of Unraid to enjoy Unraid Connect\n";
+
+// early escape handled via unraid_connect_cleanup_for_unsupported_os_versions step
+exit(0);
+]]></INLINE>
+  </FILE>
+  <!-- cleanup script for Unraid 6.12.0 and earlier. when run, it will exit the plugin install with an error status. -->
+  <!-- See the version of dynamix.unraid.net.plg in commit a240a031a for the original implementation of this code. -->
+  <FILE Name="/tmp/unraid_connect_cleanup_for_unsupported_os_versions.sh" Run="/bin/bash" Method="install" Max="6.12.0">
+    <INLINE><![CDATA[
+# Inlined copy of perform_connect_cleanup from
+# /usr/local/share/dynamix.unraid.net/install/scripts/cleanup.sh
+# to avoid the need to decompress the plugin tarball just to run the cleanup script
+
+# Handle flash backup deactivation and Connect signout
+perform_connect_cleanup() {
+  printf "\n**********************************\n"
+  printf "🧹 CLEANING UP - may take a minute\n"
+  printf "**********************************\n"
+  
+  # Handle git-based flash backups
+  if [ -f "/boot/.git" ]; then
+    if [ -f "/etc/rc.d/rc.flash_backup" ]; then
+      printf "\nStopping flash backup service. Please wait...\n"
+      /etc/rc.d/rc.flash_backup stop >/dev/null 2>&1
+    fi
+    
+    if [ -f "/usr/local/emhttp/plugins/dynamix.my.servers/include/UpdateFlashBackup.php" ]; then
+      printf "\nDeactivating flash backup. Please wait...\n"
+      /usr/bin/php /usr/local/emhttp/plugins/dynamix.my.servers/include/UpdateFlashBackup.php deactivate
+    fi
+  fi
+  
+  # Check if connect.json or myservers.cfg exists
+  if [ -f "/boot/config/plugins/dynamix.my.servers/configs/connect.json" ] || [ -f "/boot/config/plugins/dynamix.my.servers/myservers.cfg" ]; then
+    # Stop unraid-api
+    printf "\nStopping unraid-api. Please wait...\n"
+    if [ -f "/etc/rc.d/rc.unraid-api" ]; then
+      /etc/rc.d/rc.unraid-api stop 2>&1
+    elif command -v unraid-api >/dev/null 2>&1; then
+      unraid-api stop 2>&1
+    else
+      echo "⚠️ Warning: Neither /etc/rc.d/rc.unraid-api nor unraid-api command found"
+    fi
+    
+    # Sign out of Unraid Connect (we'll use curl directly from shell)
+    # We need to extract the username from connect.json or myservers.cfg and the registration key
+    has_username=false
+    
+    # Check connect.json first (newer format)
+    if [ -f "/boot/config/plugins/dynamix.my.servers/configs/connect.json" ] && command -v jq >/dev/null 2>&1; then
+      username=$(jq -r '.username' "/boot/config/plugins/dynamix.my.servers/configs/connect.json" 2>/dev/null)
+      if [ -n "$username" ] && [ "$username" != "null" ]; then
+        has_username=true
+      fi
+    fi
+    
+    # Fallback to myservers.cfg (legacy format)
+    if [ "$has_username" = false ] && [ -f "/boot/config/plugins/dynamix.my.servers/myservers.cfg" ]; then
+      if grep -q 'username' "/boot/config/plugins/dynamix.my.servers/myservers.cfg"; then
+        has_username=true
+      fi
+    fi
+    
+    if [ "$has_username" = true ]; then
+      printf "\nSigning out of Unraid Connect\n"
+      # Check if regFILE exists in var.ini
+      if [ -f "/var/local/emhttp/var.ini" ]; then
+        regfile=$(grep "regFILE" "/var/local/emhttp/var.ini" | cut -d= -f2)
+        if [ -n "$regfile" ] && [ -f "$regfile" ]; then
+          # Base64 encode the key file and send to server
+          encoded_key=$(base64 "$regfile" | tr -d '\n')
+          if [ -n "$encoded_key" ]; then
+            curl -s -X POST "https://keys.lime-technology.com/account/server/unregister" \
+              -d "keyfile=$encoded_key" >/dev/null 2>&1
+          fi
+        fi
+      fi
+    fi
+    
+    # Remove config files
+    rm -f /boot/config/plugins/dynamix.my.servers/myservers.cfg
+    rm -f /boot/config/plugins/dynamix.my.servers/configs/connect.json
+    
+    # Reload nginx to disable Remote Access
+    printf "\n⚠️ Reloading Web Server. If this window stops updating for two minutes please close it.\n"
+    /etc/rc.d/rc.nginx reload >/dev/null 2>&1
+  fi
+}
+
+perform_connect_cleanup
+echo "Done. Please uninstall the Connect plugin to complete the cleanup."
+# Exit with error to clarify that further user action--either uninstalling the plugin or upgrading to a newer version of Unraid--is required.
+exit 1;
+]]></INLINE>
+  </FILE>
+  <!-- Backup files before installation -->
+  <FILE Run="/bin/bash" Method="install">
+    <INLINE><![CDATA[
+echo "Backing up original files..."
+
+# Define files to backup in a shell variable
+FILES_TO_BACKUP=(
+  "/usr/local/emhttp/plugins/dynamix/DisplaySettings.page"
+  "/usr/local/emhttp/plugins/dynamix/Registration.page"
+  "/usr/local/emhttp/plugins/dynamix/include/DefaultPageLayout.php"
+  "/usr/local/emhttp/plugins/dynamix/include/ProvisionCert.php"
+  "/usr/local/emhttp/plugins/dynamix/include/UpdateDNS.php"
+  "/usr/local/emhttp/plugins/dynamix/include/ReplaceKey.php"
+  "/usr/local/emhttp/plugins/dynamix/include/Wrappers.php"
+  "/usr/local/emhttp/plugins/dynamix.plugin.manager/Downgrade.page"
+  "/usr/local/emhttp/plugins/dynamix.plugin.manager/Update.page"
+  "/usr/local/emhttp/plugins/dynamix.plugin.manager/include/ShowChanges.php"
+  "/usr/local/emhttp/plugins/dynamix.plugin.manager/scripts/showchanges"
+  "/usr/local/emhttp/plugins/dynamix.plugin.manager/scripts/unraidcheck"
+  "/usr/local/emhttp/plugins/dynamix.plugin.manager/include/UnraidCheck.php"
+  "/usr/local/emhttp/plugins/dynamix.plugin.manager/include/UnraidCheckExec.php"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/Connect.page"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/MyServers.page"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/Registration.page"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/include/myservers1.php"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/include/myservers2.php"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/include/state.php"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/include/translations.php"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/data/server-state.php"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/include/reboot-details.php"
+  "/usr/local/emhttp/plugins/dynamix.my.servers/include/web-components-extractor.php"
+  "/usr/local/emhttp/update.htm"
+  "/usr/local/emhttp/redirect.htm"
+  "/usr/local/emhttp/logging.htm"
+  "/etc/nginx/nginx.conf"
+  "/etc/rc.d/rc.nginx"
+  "/usr/share/mozilla/firefox/9n35r0i1.default/user.js"
+)
+
+# Backup each file if it exists and doesn't already have a backup
+for FILE in "${FILES_TO_BACKUP[@]}"; do
+  if [ -f "$FILE" ] && [ ! -f "$FILE-" ]; then
+    cp -p "$FILE" "$FILE-"
+    echo "Backed up: $FILE"
+  fi
+done
+
+# Handle the unraid-components directory
+DIR=/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components
+if [ -d "$DIR" ] && [ ! -d "$DIR-" ]; then
+  mv "$DIR" "$DIR-"
+  echo "Moved directory: $DIR to $DIR-"
+fi
+
+echo "Backup complete."
+exit 0
+]]></INLINE>
+  </FILE>
+  <FILE Run="/bin/bash" Method="install">
+    <INLINE><![CDATA[
+      echo "Patching header logo if necessary..."
+
+      # We do this here instead of via API FileModification to avoid undesirable
+      # rollback when the API is stopped.
+      #
+      # This is necessary on < 7.2 because the unraid-header-os-version web component
+      # that ships with the base OS only displayes the version, not the logo as well.
+      #
+      # Rolling back in this case (i.e when stopping the API) yields a duplicate logo
+      # that blocks interaction with the navigation menu.
+      
+      # Remove the old header logo from DefaultPageLayout.php if present
+      if [ -f "/usr/local/emhttp/plugins/dynamix/include/DefaultPageLayout.php" ]; then
+        sed -i 's|<a href="https://unraid.net" target="_blank"><?readfile("$docroot/webGui/images/UN-logotype-gradient.svg")?></a>||g' "/usr/local/emhttp/plugins/dynamix/include/DefaultPageLayout.php"
+        
+        # Add unraid-modals element if not already present
+        if ! grep -q '<unraid-modals>' "/usr/local/emhttp/plugins/dynamix/include/DefaultPageLayout.php"; then
+          sed -i 's|<body>|<body>\n<unraid-modals></unraid-modals>|' "/usr/local/emhttp/plugins/dynamix/include/DefaultPageLayout.php"
+        fi
+      fi
+      
+      ]]></INLINE>
+  </FILE>
+  <FILE Run="/bin/bash" Method="remove">
+    <INLINE>
+      MAINNAME="&name;"
+      <![CDATA[
+      echo "Removing Plugin"
+      
+      # Check Unraid version
+      UNRAID_VERSION=""
+      is_7_2_or_higher=false
+      
+      # Check if version file exists and is readable
+      if [ -f "/etc/unraid-version" ] && [ -r "/etc/unraid-version" ]; then
+        UNRAID_VERSION=$(cat /etc/unraid-version | grep "^version=" | cut -d'"' -f2 2>/dev/null)
+        
+        if [ -z "$UNRAID_VERSION" ]; then
+          echo "Warning: Unable to parse version from /etc/unraid-version"
+          echo "Using safe removal method (plugin file removal + reboot)"
+          is_7_2_or_higher=true  # Default to safe method
+        else
+          # Check if this is Unraid 7.2 or higher (including RCs and prereleases)
+          if [[ "$UNRAID_VERSION" =~ ^7\.([2-9]|[1-9][0-9]+)\. ]] || [[ "$UNRAID_VERSION" =~ ^([8-9]|[1-9][0-9]+)\. ]]; then
+            is_7_2_or_higher=true
+          fi
+        fi
+      else
+        echo "Warning: /etc/unraid-version file not found or not readable"
+        echo "Using safe removal method (plugin file removal + reboot)"
+        is_7_2_or_higher=true  # Default to safe method
+      fi
+      
+      if [ "$is_7_2_or_higher" = true ]; then
+        echo "Unraid 7.2+ detected. Using safe removal method."
+        if ! /etc/rc.d/rc.unraid-api plugins remove unraid-api-plugin-connect -b; then
+          echo "Warning: Failed to remove connect API plugin"
+        fi
+
+        # Send notification to user
+        /usr/local/emhttp/webGui/scripts/notify \
+          -e "Unraid Connect" \
+          -s "Reboot Required for Unraid Connect Removal" \
+          -d "Unraid Connect plugin has been marked for removal. Please reboot your server to complete the uninstallation." \
+          -i "warning"
+        
+        echo "Plugin marked for removal. Reboot required to complete uninstallation."
+      else
+        # Original removal method for older versions
+        # Find any installed dynamix.unraid.net package
+        pkg_installed=$(ls -1 /var/log/packages/dynamix.unraid.net* 2>/dev/null | head -1)
+        if [ -n "$pkg_installed" ]; then
+          pkg_basename=$(basename "$pkg_installed")
+          echo "Removing package: $pkg_basename"
+          removepkg --terse "$pkg_basename"
+        else
+          echo "No dynamix.unraid.net package found. Trying with basic package name."
+          removepkg --terse "${MAINNAME}"
+        fi
+      fi
+
+      # File restoration function
+      echo "Restoring files..."
+      
+      # Define files to restore in a shell variable - must match backup list
+      FILES_TO_RESTORE=(
+        "/usr/local/emhttp/plugins/dynamix/DisplaySettings.page"
+        "/usr/local/emhttp/plugins/dynamix/Registration.page"
+        "/usr/local/emhttp/plugins/dynamix/include/DefaultPageLayout.php"
+        "/usr/local/emhttp/plugins/dynamix/include/ProvisionCert.php"
+        "/usr/local/emhttp/plugins/dynamix/include/UpdateDNS.php"
+        "/usr/local/emhttp/plugins/dynamix/include/ReplaceKey.php"
+        "/usr/local/emhttp/plugins/dynamix/include/Wrappers.php"
+        "/usr/local/emhttp/plugins/dynamix.plugin.manager/Downgrade.page"
+        "/usr/local/emhttp/plugins/dynamix.plugin.manager/Update.page"
+        "/usr/local/emhttp/plugins/dynamix.plugin.manager/include/ShowChanges.php"
+        "/usr/local/emhttp/plugins/dynamix.plugin.manager/scripts/showchanges"
+        "/usr/local/emhttp/plugins/dynamix.plugin.manager/scripts/unraidcheck"
+        "/usr/local/emhttp/plugins/dynamix.plugin.manager/include/UnraidCheck.php"
+        "/usr/local/emhttp/plugins/dynamix.plugin.manager/include/UnraidCheckExec.php"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/Connect.page"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/MyServers.page"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/Registration.page"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/include/myservers1.php"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/include/myservers2.php"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/include/state.php"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/include/translations.php"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/data/server-state.php"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/include/reboot-details.php"
+        "/usr/local/emhttp/plugins/dynamix.my.servers/include/web-components-extractor.php"
+        "/usr/local/emhttp/update.htm"
+        "/usr/local/emhttp/redirect.htm"
+        "/usr/local/emhttp/logging.htm"
+        "/etc/nginx/nginx.conf"
+        "/etc/rc.d/rc.nginx"
+        "/usr/share/mozilla/firefox/9n35r0i1.default/user.js"
+      )
+      
+      # Restore each file if backup exists
+      for FILE in "${FILES_TO_RESTORE[@]}"; do
+        [ -f "$FILE-" ] && mv -f "$FILE-" "$FILE"
+      done
+      
+      # Restore CSS files from backup
+      echo "Restoring original CSS files..."
+      CSS_DIR="/usr/local/emhttp/plugins/dynamix/styles"
+      BACKUP_DIR="$CSS_DIR/.unraid-api-backup"
+      
+      if [ -d "$BACKUP_DIR" ]; then
+        for backup_file in "$BACKUP_DIR"/*.css; do
+          if [ -f "$backup_file" ]; then
+            filename=$(basename "$backup_file")
+            original_file="$CSS_DIR/$filename"
+            echo "  Restoring $filename..."
+            cp "$backup_file" "$original_file"
+          fi
+        done
+        # Remove backup directory after restoration
+        rm -rf "$BACKUP_DIR"
+        echo "CSS restoration complete."
+      else
+        echo "No CSS backup found, skipping restoration."
+      fi
+      
+      # Handle the unraid-components directory
+      DIR=/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components
+      # Remove the archive's contents before restoring
+      if [ -d "$DIR" ]; then
+        rm -rf "$DIR"
+      fi
+      if [ -d "$DIR-" ]; then
+        mv "$DIR-" "$DIR"
+        echo "Restored directory: $DIR- to $DIR"
+      fi
+      ]]>
+    </INLINE>
+  </FILE>
+  <!-- install api package and all necessary files -->
+  <FILE Run="/bin/bash" Method="install">
+    <INLINE>
+      TAG="&tag;" 
+      PKG_FILE="&source;"      # Full path to the package file including .txz extension
+      PKG_URL="&txz_url;"      # URL where package was downloaded from
+      PKG_NAME="&txz_name;"    # Name of the package file
+      CONNECT_API_VERSION="&api_version;" # Version of API included with Connect
+    <![CDATA[
+# Function to compare version numbers using PHP's version_compare
+# Returns 0 if version1 > version2, 1 if version1 < version2, 2 if equal
+compare_versions() {
+  local ver1="$1"
+  local ver2="$2"
+
+  # Normalize versions: drop leading 'v' and ignore build metadata (+...) for semver parity
+  local norm_ver1="${ver1#v}"
+  norm_ver1="${norm_ver1%%+*}"
+  local norm_ver2="${ver2#v}"
+  norm_ver2="${norm_ver2%%+*}"
+
+  if [ "$norm_ver1" = "$norm_ver2" ]; then
+    return 2
+  fi
+
+  # Use PHP's version_compare which handles semantic versioning properly
+  result=$(PHP_VER1="$norm_ver1" PHP_VER2="$norm_ver2" php -r "
+    \$v1 = getenv('PHP_VER1');
+    \$v2 = getenv('PHP_VER2');
+    \$cmp = version_compare(\$v1, \$v2);
+    if (\$cmp > 0) echo '0';
+    elseif (\$cmp < 0) echo '1';
+    else echo '2';
+  ")
+
+  return $result
+}
+
+# Check if API is already installed and get its version
+CURRENT_API_VERSION=""
+if [ -f "/usr/local/share/dynamix.unraid.net/config/vendor_archive.json" ] && command -v jq >/dev/null 2>&1; then
+  CURRENT_API_VERSION=$(jq -r '.api_version' "/usr/local/share/dynamix.unraid.net/config/vendor_archive.json" 2>/dev/null)
+fi
+
+# If we have both versions, compare them
+SKIP_API_INSTALL=false
+if [ -n "$CURRENT_API_VERSION" ] && [ "$CURRENT_API_VERSION" != "null" ] && [ -n "$CONNECT_API_VERSION" ]; then
+  echo "Current API version on server: $CURRENT_API_VERSION"
+  echo "Connect wants to install API version: $CONNECT_API_VERSION"
+  
+  compare_versions "$CURRENT_API_VERSION" "$CONNECT_API_VERSION"
+  result=$?
+  
+  if [ $result -eq 0 ]; then
+    echo "⚠️ WARNING: Server has a newer API version ($CURRENT_API_VERSION) than Connect ($CONNECT_API_VERSION)"
+    echo "Skipping API package installation to prevent downgrade"
+    
+    # Send notification to user
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "Unraid Connect" \
+      -s "API Version Conflict Detected" \
+      -d "Your server has API version $CURRENT_API_VERSION installed, which is newer than the version included with Connect ($CONNECT_API_VERSION). The API installation has been skipped to prevent a downgrade. Connect remains installed but may have limited functionality." \
+      -i "warning"
+    
+    SKIP_API_INSTALL=true
+  elif [ $result -eq 2 ]; then
+    echo "API versions match - proceeding with installation"
+  else
+    echo "Connect has a newer API version - proceeding with upgrade"
+  fi
+fi
+
+if [ "$SKIP_API_INSTALL" = false ]; then
+  # Install the Slackware package
+  echo "Installing package..."
+  # Clean up any old package txz files if they don't match our current version
+  for txz_file in /boot/config/plugins/dynamix.my.servers/dynamix.unraid.net-*.txz; do
+    if [ -f "$txz_file" ] && [ "$txz_file" != "${PKG_FILE}" ]; then
+      echo "Removing old package file: $txz_file"
+      rm -f "$txz_file"
+    fi
+  done
+
+  # Stop the API service before mutating /usr/local/unraid-api to avoid upgrade races
+  if [ -x "/etc/rc.d/rc.unraid-api" ]; then
+    echo "Stopping Unraid API service before upgrade..."
+    /etc/rc.d/rc.unraid-api stop || echo "Warning: Failed to stop Unraid API service"
+  fi
+
+  # Remove existing node_modules directory
+  echo "Cleaning up existing node_modules directory..."
+  if [ -d "/usr/local/unraid-api/node_modules" ]; then
+    echo "Removing: /usr/local/unraid-api/node_modules"
+    rm -rf "/usr/local/unraid-api/node_modules"
+  fi
+
+  # Clean up pkgtools removal logs left behind by prior uninstall operations
+  REMOVE_PKG_LOG_DIR="/var/log/pkgtools/removed_packages/dynamix.unraid.net"
+  if [ -d "$REMOVE_PKG_LOG_DIR" ]; then
+    echo "Cleaning up pkgtools removed_packages logs..."
+    find "$REMOVE_PKG_LOG_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  fi
+
+  # Clear existing unraid-components directory contents to ensure clean installation
+  echo "Cleaning up existing unraid-components directory..."
+  DIR="/usr/local/emhttp/plugins/dynamix.my.servers/unraid-components"
+  if [ -d "$DIR" ]; then
+    echo "Clearing contents of: $DIR"
+    rm -rf "$DIR"/*
+  fi
+
+  # Install the package using the explicit file path
+  upgradepkg --install-new --reinstall "${PKG_FILE}"
+  if [ $? -ne 0 ]; then
+    echo "⚠️ Package installation failed"
+    exit 1
+  fi
+
+  if [[ -n "$TAG" && "$TAG" != "" ]]; then
+    printf -v sedcmd 's@^\*\*Unraid Connect\*\*@**Unraid Connect (%s)**@' "$TAG"
+    sed -i "${sedcmd}" "/usr/local/emhttp/plugins/dynamix.unraid.net/README.md"
+  fi
+else
+  echo "API package installation skipped due to version conflict"
+  echo "Connect plugin remains installed but API was not modified"
+fi
+
+exit 0
+]]>
+    </INLINE>
+  </FILE>
+  <!-- port of the old doinst.sh script -->
+  <FILE Run="/bin/bash" Method="install">
+    <INLINE><![CDATA[
+SCRIPTS_DIR="/usr/local/share/dynamix.unraid.net/install/scripts"
+# Log file for debugging
+mkdir -p "/var/log/unraid-api"
+
+echo "Starting Unraid Connect installation..."
+
+# Move settings on flash drive
+CFG_OLD=/boot/config/plugins/Unraid.net
+CFG_NEW=/boot/config/plugins/dynamix.my.servers
+[ -d "$CFG_OLD" ] && [ ! -d "$CFG_NEW" ] && mv "$CFG_OLD" "$CFG_NEW"
+
+# Setup the API (but don't start it yet)
+if [ -x "$SCRIPTS_DIR/setup_api.sh" ]; then
+  echo "Setting up Unraid API..."
+  echo "Running setup_api.sh"
+  # Run and show output to user
+  "$SCRIPTS_DIR/setup_api.sh"
+else
+  echo "ERROR: setup_api.sh not found or not executable"
+  echo "ERROR: setup_api.sh not found or not executable"
+fi
+
+# Run post-installation verification
+if [ -x "$SCRIPTS_DIR/verify_install.sh" ]; then
+  echo "Running post-installation verification..."
+  echo "Running verify_install.sh"
+  # Run and show output to user
+  "$SCRIPTS_DIR/verify_install.sh"
+else
+  echo "ERROR: verify_install.sh not found or not executable"
+  echo "ERROR: verify_install.sh not found or not executable"
+fi
+
+echo "Installation completed at $(date)"
+      ]]></INLINE>
+  </FILE>
+  <!-- start the unraid api service -->
+  <FILE Run="/bin/bash" Method="install">
+    <INLINE><![CDATA[
+# Clean up any old node_modules archives (on the boot drive) that don't match our current version
+#
+# Must run after package installation because the package provides an update api config file,
+# which determines the current API version and vendor archive to keep.
+/etc/rc.d/rc.unraid-api cleanup-dependencies
+
+echo "Starting Unraid API service"
+echo "DEBUG: Checking PATH: $PATH"
+echo "DEBUG: Checking if unraid-api files exist:"
+ls -la /usr/local/unraid-api/dist/
+echo "DEBUG: Checking symlink:"
+ls -la /usr/local/bin/unraid-api
+echo "DEBUG: Checking Node.js version:"
+node --version
+echo "DEBUG: Checking if cli.js is executable:"
+ls -la /usr/local/unraid-api/dist/cli.js
+echo "DEBUG: Attempting to run unraid-api directly:"
+/usr/local/unraid-api/dist/cli.js version || echo "Direct execution failed"
+
+echo "If no additional messages appear within 30 seconds, it is safe to refresh the page."
+/etc/rc.d/rc.unraid-api plugins add unraid-api-plugin-connect -b --no-restart
+/etc/rc.d/rc.unraid-api start
+
+echo "Unraid API service started"
+echo "✅ Installation is complete, it is safe to close this window"
+echo
+exit 0
+      ]]></INLINE>
+  </FILE>
+  <!-- uninstall cleanup message -->
+  <FILE Run="/bin/bash" Method="remove">
+    <INLINE><![CDATA[
+echo
+echo "✅ Uninstall is complete, it is safe to close this window"
+echo
+
+exit 0
+]]></INLINE>
+  </FILE>
+</PLUGIN>

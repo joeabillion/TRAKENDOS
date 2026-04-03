@@ -1,0 +1,28 @@
+#!/bin/bash
+# Unraid Go File - Runs on every boot
+# Last updated: $(date)
+
+# Ensure SSH stays enabled
+chmod +x /etc/rc.d/rc.sshd
+/etc/rc.d/rc.sshd start
+
+# Start Pterodactyl infrastructure
+sleep 30  # Wait for Docker to be ready
+
+# Start containers if not running
+docker start mariadb 2>/dev/null
+sleep 10
+docker start Redis 2>/dev/null
+docker start Pterodactyl-Panel 2>/dev/null
+sleep 15
+docker start wings 2>/dev/null
+sleep 5
+docker start cloudflared 2>/dev/null
+
+echo "Pterodactyl infrastructure started" >> /var/log/autostart.log
+# Raise inotify limits for Plex & media scanners
+sysctl -w fs.inotify.max_user_watches=1048576
+sysctl -w fs.inotify.max_user_instances=1024
+sysctl -w fs.inotify.max_queued_events=65536
+docker start Plex-Media-Server 2>/dev/null
+docker start Plex-Media-Server 2>/dev/null

@@ -1,0 +1,55 @@
+#!/bin/bash
+# Unraid Go File - runs at every boot
+
+# 1) Start the WebGUI (critical)
+#    Without this, the GUI won't come up on its own.
+/usr/local/sbin/emhttp 
+
+# 2) Optional: ensure SSH is on (if you like it this way)
+chmod +x /etc/rc.d/rc.sshd 2>/dev/null || true
+/etc/rc.d/rc.sshd start 2>/dev/null || true
+
+# 3) Raise inotify limits (your media scanners)
+sysctl -w fs.inotify.max_user_watches=1048576
+sysctl -w fs.inotify.max_user_instances=1024
+sysctl -w fs.inotify.max_queued_events=65536
+
+# 4) Wait for the array and Docker to be ready before starting any containers
+#    We wait up to ~2 minutes total, bailing early if Docker is up.
+for i in {1..60}; do
+  if /etc/rc.d/rc.docker status >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+# 5) Prefer container restart policies; start only if needed
+#    (If you set 'restart: unless-stopped', these are usually unnecessary.)
+docker start mariadb 2>/dev/null || true
+sleep 5
+docker start Redis 2>/dev/null || true
+docker start Pterodactyl-Panel 2>/dev/null || true
+sleep 10
+docker start wings 2>/dev/null || true
+docker start cloudflared 2>/dev/null || true
+docker start Plex-Media-Server 2>/dev/null || true
+
+# Log a breadcrumb so you can see this ran
+echo "$(date) go-file startup complete" >> /var/log/autostart.log
+
+# --- Fallback: ensure Docker image is mounted and daemon started on boot ---
+for i in {1..60}; do
+  if /etc/rc.d/rc.docker status >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+if ! /etc/rc.d/rc.docker status >/dev/null 2>&1; then
+  mkdir -p /var/lib/docker
+  losetup -j /mnt/cache/system/docker/docker.img >/dev/null 2>&1 || losetup -fP /mnt/cache/system/docker/docker.img
+  LOOP=$(losetup -j /mnt/cache/system/docker/docker.img | awk -F: '{print $1}')
+  mount -t btrfs -o noatime,space_cache=v2 "$LOOP" /var/lib/docker 2>/dev/null || true
+  /etc/rc.d/rc.docker start
+fi
+# --- End fallback ---

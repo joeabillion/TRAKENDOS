@@ -1,0 +1,170 @@
+{
+    "0000:00:00.0": {
+        "class": "0600",
+        "vendor_id": "8086",
+        "device_id": "a700",
+        "description": "Host bridge: Intel Corporation Raptor Lake-S Host Bridge\/DRAM Controller (rev 01)\n"
+    },
+    "0000:00:01.0": {
+        "class": "0604",
+        "vendor_id": "8086",
+        "device_id": "a70d",
+        "description": "PCI bridge: Intel Corporation Raptor Lake PCI Express 5.0 Graphics Port (PEG010) (rev 01)\n"
+    },
+    "0000:00:02.0": {
+        "class": "0300",
+        "vendor_id": "8086",
+        "device_id": "a780",
+        "description": "VGA compatible controller: Intel Corporation Raptor Lake-S GT1 [UHD Graphics 770] (rev 04)\n"
+    },
+    "0000:00:06.0": {
+        "class": "0604",
+        "vendor_id": "8086",
+        "device_id": "a74d",
+        "description": "PCI bridge: Intel Corporation Raptor Lake PCI Express 4.0 Graphics Port (rev 01)\n"
+    },
+    "0000:00:0a.0": {
+        "class": "1180",
+        "vendor_id": "8086",
+        "device_id": "a77d",
+        "description": "Signal processing controller: Intel Corporation Raptor Lake Crashlog and Telemetry (rev 01)\n"
+    },
+    "0000:00:14.0": {
+        "class": "0c03",
+        "vendor_id": "8086",
+        "device_id": "7a60",
+        "description": "USB controller: Intel Corporation Raptor Lake USB 3.2 Gen 2x2 (20 Gb\/s) XHCI Host Controller (rev 11)\n"
+    },
+    "0000:00:14.2": {
+        "class": "0500",
+        "vendor_id": "8086",
+        "device_id": "7a27",
+        "description": "RAM memory: Intel Corporation Raptor Lake PCH Shared SRAM (rev 11)\n"
+    },
+    "0000:00:15.0": {
+        "class": "0c80",
+        "vendor_id": "8086",
+        "device_id": "7a4c",
+        "description": "Serial bus controller: Intel Corporation Raptor Lake Serial IO I2C Host Controller #0 (rev 11)\n"
+    },
+    "0000:00:15.1": {
+        "class": "0c80",
+        "vendor_id": "8086",
+        "device_id": "7a4d",
+        "description": "Serial bus controller: Intel Corporation Raptor Lake Serial IO I2C Host Controller #1 (rev 11)\n"
+    },
+    "0000:00:15.2": {
+        "class": "0c80",
+        "vendor_id": "8086",
+        "device_id": "7a4e",
+        "description": "Serial bus controller: Intel Corporation Raptor Lake Serial IO I2C Host Controller #2 (rev 11)\n"
+    },
+    "0000:00:16.0": {
+        "class": "0780",
+        "vendor_id": "8086",
+        "device_id": "7a68",
+        "description": "Communication controller: Intel Corporation Raptor Lake CSME HECI #1 (rev 11)\n"
+    },
+    "0000:00:17.0": {
+        "class": "0106",
+        "vendor_id": "8086",
+        "device_id": "7a62",
+        "description": "SATA controller: Intel Corporation Raptor Lake SATA AHCI Controller (rev 11)\n"
+    },
+    "0000:00:1a.0": {
+        "class": "0604",
+        "vendor_id": "8086",
+        "device_id": "7a48",
+        "description": "PCI bridge: Intel Corporation Raptor Lake PCI Express Root Port #25 (rev 11)\n"
+    },
+    "0000:00:1b.0": {
+        "class": "0604",
+        "vendor_id": "8086",
+        "device_id": "7a40",
+        "description": "PCI bridge: Intel Corporation Raptor Lake PCI Express Root Port #17 (rev 11)\n"
+    },
+    "0000:00:1b.4": {
+        "class": "0604",
+        "vendor_id": "8086",
+        "device_id": "7a44",
+        "description": "PCI bridge: Intel Corporation Raptor Lake PCI Express Root Port #21 (rev 11)\n"
+    },
+    "0000:00:1c.0": {
+        "class": "0604",
+        "vendor_id": "8086",
+        "device_id": "7a38",
+        "description": "PCI bridge: Intel Corporation Raptor Lake PCI Express Root Port #1 (rev 11)\n"
+    },
+    "0000:00:1c.3": {
+        "class": "0604",
+        "vendor_id": "8086",
+        "device_id": "7a3b",
+        "description": "PCI bridge: Intel Corporation Raptor Lake PCI Express Root Port #4 (rev 11)\n"
+    },
+    "0000:00:1d.0": {
+        "class": "0604",
+        "vendor_id": "8086",
+        "device_id": "7a30",
+        "description": "PCI bridge: Intel Corporation Raptor Lake PCI Express Root Port #9 (rev 11)\n"
+    },
+    "0000:00:1f.0": {
+        "class": "0601",
+        "vendor_id": "8086",
+        "device_id": "7a04",
+        "description": "ISA bridge: Intel Corporation Z790 Chipset LPC\/eSPI Controller (rev 11)\n"
+    },
+    "0000:00:1f.3": {
+        "class": "0403",
+        "vendor_id": "8086",
+        "device_id": "7a50",
+        "description": "Audio device: Intel Corporation Raptor Lake High Definition Audio Controller (rev 11)\n"
+    },
+    "0000:00:1f.4": {
+        "class": "0c05",
+        "vendor_id": "8086",
+        "device_id": "7a23",
+        "description": "SMBus: Intel Corporation 700 Series Chipset SMBus Controller (rev 11)\n"
+    },
+    "0000:00:1f.5": {
+        "class": "0c80",
+        "vendor_id": "8086",
+        "device_id": "7a24",
+        "description": "Serial bus controller: Intel Corporation Raptor Lake SPI (flash) Controller (rev 11)\n"
+    },
+    "0000:01:00.0": {
+        "class": "0302",
+        "vendor_id": "10de",
+        "device_id": "1b38",
+        "description": "3D controller: NVIDIA Corporation GP102GL [Tesla P40] (rev a1)\n"
+    },
+    "0000:02:00.0": {
+        "class": "0108",
+        "vendor_id": "15b7",
+        "device_id": "5045",
+        "description": "Non-Volatile memory controller: Sandisk Corp WD_BLACK SN7100\/WD PC SN7100S M.2 2280 NVMe SSD (DRAM-less) (rev 01)\n"
+    },
+    "0000:05:00.0": {
+        "class": "0108",
+        "vendor_id": "1344",
+        "device_id": "6001",
+        "description": "Non-Volatile memory controller: Micron Technology Inc 2100AI NVMe SSD [Nitro] (rev 03)\n"
+    },
+    "0000:06:00.0": {
+        "class": "0280",
+        "vendor_id": "8086",
+        "device_id": "272b",
+        "description": "Network controller: Intel Corporation Wi-Fi 7(802.11be) AX1775*\/AX1790*\/BE20*\/BE401\/BE1750* 2x2 (rev 1a)\n"
+    },
+    "0000:07:00.0": {
+        "class": "0200",
+        "vendor_id": "8086",
+        "device_id": "125c",
+        "description": "Ethernet controller: Intel Corporation Ethernet Controller I226-V (rev 06)\n"
+    },
+    "0000:08:00.0": {
+        "class": "0302",
+        "vendor_id": "10de",
+        "device_id": "1b38",
+        "description": "3D controller: NVIDIA Corporation GP102GL [Tesla P40] (rev a1)\n"
+    }
+}

@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>phpmyadmin</Name>
+  <Repository>lscr.io/linuxserver/phpmyadmin</Repository>
+  <Registry>https://github.com/orgs/linuxserver/packages/container/package/phpmyadmin</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/linuxserver/docker-phpmyadmin/issues/new/choose</Support>
+  <Project>https://github.com/phpmyadmin/phpmyadmin/</Project>
+  <Overview>Phpmyadmin(https://github.com/phpmyadmin/phpmyadmin/) is a free software tool written in PHP, intended to handle the administration of MySQL over the Web. phpMyAdmin supports a wide range of operations on MySQL and MariaDB.</Overview>
+  <Category>Tools:Utilities Network:Management</Category>
+  <WebUI>http://[IP]:[PORT:80]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/linuxserver/templates/main/unraid/phpmyadmin.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/phpmyadmin-logo.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled>1758389068</DateInstalled>
+  <DonateText>Donations</DonateText>
+  <DonateLink>https://www.linuxserver.io/donate</DonateLink>
+  <Requires/>
+  <Config Name="WebUI" Target="80" Default="80" Mode="tcp" Description="Port for web frontend" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="PMA_ARBITRARY" Target="PMA_ARBITRARY" Default="1" Mode="{3}" Description="Set to `1` to allow you to connect to any server. Setting to `0` will only allow you to connect to specified hosts (See Application Setup)" Type="Variable" Display="always" Required="false" Mask="false">1</Config>
+  <Config Name="PMA_ABSOLUTE_URI" Target="PMA_ABSOLUTE_URI" Default="https://phpmyadmin.example.com" Mode="{3}" Description="Set the URL you will use to access the web frontend" Type="Variable" Display="always" Required="false" Mask="false">http://192.168.1.228:8080/</Config>
+  <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/phpmyadmin" Mode="rw" Description="Persistent config files" Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/phpmyadmin</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="{3}" Description="" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="{3}" Description="" Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="{3}" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+  <TailscaleStateDir/>
+</Container>

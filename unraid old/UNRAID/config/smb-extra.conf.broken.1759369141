@@ -1,0 +1,8 @@
+[mc-live]
+        path = /mnt/user/mc-live
+        browseable = yes
+        writeable = yes
+        guest ok = no
+        valid users = joseph
+        vfs objects = catia fruit streams_xattr
+        fruit:encoding = native

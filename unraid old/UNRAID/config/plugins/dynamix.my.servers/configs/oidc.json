@@ -1,0 +1,21 @@
+{
+  "providers": [
+    {
+      "id": "unraid.net",
+      "name": "Unraid.net",
+      "clientId": "CONNECT_SERVER_SSO",
+      "issuer": "https://account.unraid.net",
+      "scopes": [
+        "openid",
+        "profile",
+        "email"
+      ],
+      "authorizationRules": [],
+      "buttonText": "Login With Unraid.net",
+      "buttonIcon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMzMuNTIgNzYuOTciPjx0aXRsZT5VTi1tYXJrLXdoaXRlPC90aXRsZT48cGF0aCBkPSJNNjMuNDksMTkuMjRINzBWNTcuNzNINjMuNDlaTTYuNTQsNTcuNzNIMFYxOS4yNEg2LjU0Wm0yNS4yLDQuNTRoNi41NVY3N0gzMS43NFpNMTUuODcsNDUuODRoNi41NFY2OS42MkgxNS44N1ptMzEuNzUsMGg2LjU0VjY5LjYySDQ3LjYyWk0xMjcsMTkuMjRoNi41NFY1Ny43M0gxMjdaTTEwMS43NywxNC43SDk1LjIzVjBoNi41NFptMTUuODgsMTYuNDRIMTExLjFWNy4zNWg2LjU1Wm0tMzEuNzUsMEg3OS4zNlY3LjM1SDg1LjlaIiBmaWxsPSIjZmZmIi8+PC9zdmc+",
+      "buttonVariant": "primary",
+      "buttonStyle": "background-color: #ff6600; border-color: #ff6600; color: white; transition: all 0.2s;"
+    }
+  ],
+  "defaultAllowedOrigins": []
+}

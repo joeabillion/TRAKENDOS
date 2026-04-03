@@ -1,0 +1,470 @@
+<?xml version='1.0' standalone='yes'?>
+
+<!DOCTYPE PLUGIN [
+<!ENTITY name             "disklocation">
+<!ENTITY author           "Ole-Henrik Jakobsen">
+<!ENTITY version          "2025.10.23">
+<!ENTITY launch           "Tools/&name;">
+<!ENTITY branch           "master">
+<!ENTITY packageURL       "https://github.com/olehj/disklocation/archive/&branch;.zip">
+<!ENTITY pluginURL        "https://raw.githubusercontent.com/olehj/&name;/&branch;/&name;-&branch;.plg">
+<!ENTITY packagefile      "&name;.&version;.zip">
+<!ENTITY pluginLOC        "/boot/config/plugins/&name;">
+<!ENTITY emplugLOC        "/usr/local/emhttp/plugins">
+<!ENTITY emhttpLOC        "&emplugLOC;/&name;">
+<!ENTITY pluginsupportURL "https://forums.unraid.net/topic/77302-plugin-disk-location/">
+]>
+
+<PLUGIN  name="&name;"
+         author="&author;"
+         version="&version;"
+         launch="&launch;"
+         pluginURL="&pluginURL;"
+         icon="server"
+         min="6.12.0"
+         support="&pluginsupportURL;"
+>
+
+<!--
+    Copyright 2019-2025, Ole-Henrik Jakobsen
+
+    This file is part of Disk Location for Unraid.
+
+    Disk Location for Unraid is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Disk Location for Unraid is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Disk Location for Unraid.  If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<CHANGES>
+###2025.10.23
+ - Commit #483 - IMPROVEMENT: Added an extra check to verify JSON check during benchmark migration, in case this is related to #482. Changed some code in benchmark page to prevent rest from not loading if a variable is empty. Changed some minor text in system page to not scare people :P
+
+###2025.10.19
+ - Commit #480 - BUG: Fixed a bug where benchmark migration would search for 'null' instead of an array.
+
+###2025.10.17
+ - Commit #478 - BUG/FEATURE: Tray Allocations might have faulted in some occasions, adjusted some code to prevent that from happening again. Added selector boxes under "Layout" instead of radio buttons. Added "hide" for the group name text.
+
+###2025.10.16
+ - Commit #475 - MINOR: Due to recent changes, the old deprecated "tray override" did malfunction. Reverted some minor changes.
+
+###2025.10.15
+ - Commit #473 - MINOR: Math is difficult, corrected wrongly counted number of assignable devices when bypassed trays where used.
+
+###2025.10.14
+ - Commit #471 - MINOR: Misaligned trays in rare cases. When there's hidden trays, it can be misaligned with the neighbor groups. Adjusted the styles for the dashboards.
+
+###2025.10.13
+ - Commit #469 - IMPROVEMENT: Added direct IO mode for Benchmark. It's now possible to select to use buffered (default), direct (probably the best for this purpose) or both for benchmarking drives. The benchmark data will be split. The graph will only show what's selected for the run, but the benchmark json file will contain all saved data.
+
+###2025.10.10
+ - Commit #467 - MINOR: Saving "space" as group name might delete wrong group upon execution. If a space or other wrong characters are written in the group names, this can cause issues where it fails to identify correct group to be deleted, deleting the group before the current. Group names now are required to have a minimum of one letter or number, empty is still supported and will use the Group ID as the name.
+
+###2025.10.08
+ - Commit #465 - IMPROVEMENT: Minor glitches in the positions when using "break", made yellow and red LED blink. When "break" is selected, the next floating element is shifted. Removed padding from floats and added only padding-bottom when break (float: none) is selected. Made more yellow and red light blink as well, not because they are in standby.
+
+###2025.10.05
+ - Commit #463 - IMPROVEMENT: Change from radio to checkboxes in backup section under System. Radio buttons are gone and checkboxes are implemented instead. Cleaned up backup section of the System tab.
+ - Commit #460 - MINOR: Made a workaround for devices with multiple addresses is stuck with Dashboard error message. "Ignore multiple LUNs" available under "Configuration" for user with this issue.
+ - Commit #459 - MINOR: Temperature warnings -1 degree offset from Unraid defaults. Changed the code to show the same warning thresholds for disk temperatures as Unraid.
+ - Commit #458 - MINOR: Hidden trays counted as assignable tray. When trays are hidden from the layout, it will not calculate those trays into the total assignable trays on the Dashboard.
+ - Commit #457 - FEATURE: The common adjustment for all groups are gone and migrated to the new configuration and moved per group under "Layout". Possible to choose where the next group will float: left (default), right or break, and to adjust align of the group name and group trays separate from each other: left, center (default), right, text can also be positioned vertical from top-left only. When these are adjusted, the Dashboard will show the changes, and not on the Layout page itself.
+ - Commit #456 - MINOR: Fixed devices to show hidden/bypassed trays more correctly in some circumstances. Made the tray allocating to be more logic and will now display numbers on empty trays if these are hidden from the Dashboard layout.
+ - Commit #455 - FEATURE: SMART Firmware Version can now be selected to be viewed in the tables.
+ - Commit #454 - IMPROVEMENT: Adjust design elements for Unraid 7.2. Various changes in the HTML and CSS code in Unraid 7.2 requires Disk Location to make some adjustments in the code.
+
+###2025.09.28
+ - Commit #461 - MINOR: Adjusted SMART cronjob to ignore devices with multiple LUNs to be re-added, this should prevent the error message about running SMART+DB at the Dashboard.
+
+###2025.06.03
+ - Commit #452 - MINOR: Issues where tray 0 can't be assigned. Check if tray is 0 or null and not just "empty". Minor bug fixed in Tray Allocations where the default selector would select 0 instead of "--" for unassigned devices.
+
+###2025.06.01
+ - Commit #450 - MINOR: Old variables used in benchmarking causing old values to be used if it shouldn't exists. Some benchmark results from "previous" run could be used for new devices with earlier dates not existing. Clear variables before each run to make sure it won't use data from different devices.
+
+###2025.05.30
+ - Commit #448 - IMPROVEMENT: Added help text for how to add own backup cycle via scheduler/crontab. Minor "Help" updates in Configuration and System tab. Added a slight difference between "silent" and non-silent output. Also updated the Help on Dashboard tab
+
+###2025.05.29
+ - Commit #446 - BUG: Fatal error in page_system - causing furious rage in the forums :P Syntax error, misplaced parentheses.
+
+###2025.05.28
+ - Commit #444 - BUG: Virtual drives causes dashboard issues due to missing SMART data. Made an ignore list for these devices to prevent slower SMART collecting.
+ - Commit #443 - MINOR: Undefined array key and Passing null to file_exists in page_system.
+
+###2025.05.27
+ - Commit #432 - BUG: Further enhancements for checking arrays and variables.
+
+###2025.05.26
+ - Commit #440 - BUG: Devices with no serial numbers can create an empty array and cause the plugin to crash. Made adjustments into cronjob, deleting "devices" and running Force SMART+DB required afterwards.
+ - Commit #438 - MINOR: htmlspecialchars duplicate where it tries to format itself in the group names. Removed htmlspecialchars from the variable to be stored in json array, it's not needed as it is read by htmlspecialchars.
+ - Commit #437 - BUG: Assigning not working and deletes all assigned devices if tray numbers are hidden. Added bypassed variables to the array instead of variables that were unset.
+
+###2025.05.25
+ - Commit #435 - MINOR: Saving tray allocations with unassigned devices throws error messages. Added a check if the variables are empty or not. If the value is empty, then it will be ignored, otherwise throw error for specific configuration.
+
+###2025.05.24
+ - Commit #433 - MINOR: Unknown USB bridge alert. Alert message popped up on devices that shouldn't be marked as failed. Added another variable check to prevent false reports.
+ - Commit #432 - BUG: Multiple users reported blank screen when saving drives to layouts, checking if its an array, otherwise set variable to null.
+
+###2025.05.22
+ - Commit #430 - IMPROVEMENT: Assignments are now done with physical tray layout, and not TrayID (it's still TrayID under the hood, but hidden from GUI).
+ - Commit #429 - IMPROVEMENT: Added possibility to reset temporary files. Reset "temporary files" under System tab will now delete SMART data and others in the tmp. Force SMART required after execution.
+ - Commit #428 - ENHANCEMENT: Fetch more data from SMART files rather than DB. SMART files in temp folders holds more recent data, so this will be prioritized when reading increasing parameters.
+ - Commit #427 - MINOR: Benchmark for removed devices visible. Hide benchmark for removed devices, these can still be retrieved by raw download.
+
+###2025.05.19
+ - Commit #425 - BUG: Flash devices etc. alerted falsely. Added more SMART checks to prevent this from happening.
+
+###2025.05.17
+ - Commit #423 - MINOR: Other irrelevant errors occured in SMART tab. Rearranged the code.
+ - Commit #422 - ENHANCEMENT: Added notification when a major device error occurs. E.g. If the drive loses it's controller, send an alert notification in Unraid about it.
+
+###2025.05.16
+ - Commit #420 - IMPROVEMENT: If a controller on a device is dead, plugin tries to find related drive and showing it as SMART FAILED and will also display error log in SMART tab if it exists. SMART tab changed slightly, background colors is related to the status of the drive.
+
+###2025.05.15
+ - Commit #418 - MINOR: Fixed a small glitch where the Unraid icons were shown regardless of settings.
+ - Commit #416 - IMPROVEMENT: Change warning to critical if drive is "faulted"
+
+###2025.05.01
+ - Commit #414 - MINOR: Empty array error occurs when there's no backup made during auto backup. Creates a new backup if none is found. Should then make auto backups as expected.
+ - Commit #413 - MINOR: Wrong Power On Hours might be picked up. In some instances the power_on_time could crash the Dashboard because the value was too high for DateTime.
+
+###2025.03.18
+ - Commit #411 - MAJOR: Benchmark page would divide by zero if fastest and slowest speed was equal, added -/+ 50 to the fastest and slowest values if they are equal.
+
+###2025.03.17
+ - Commit #409 - MINOR: Some NVMe drives will show 0 Kelvin as warning and critical temperatures, if values are not found, NULL will be set and SSD values should be used.
+
+###2025.03.12
+ - Commit #407 - MINOR: Obsolete files function listing wrong entries. Found a minor flaw where the obsolete files function would include the backup list into the array if no obsolete files were detected. This would just list "0" and do no harm, neither delete the backups as it was an non-parseable array by the function.
+
+###2025.03.11
+ - Commit #405 - IMPROVEMENT: Removed a few History tags that would just become empty as it won't contain any data. If they are selected, an error message will popup and a red border around the faulty area.
+ - Commit #404 - MINOR: Commit not found. Reported by user SickPup404, not found. Just kidding :p Tray count wrong in some count directions if bypassed trays are enabled. Rewrote the tray numbering function.
+
+###2025.03.04
+ - Commit #402 - MINOR: Fixed that in some instances and configurations, the benchmark save would trigger an error resulting in an incomplete settings.json file.
+
+###2025.03.03
+ - Commit #400 - IMPROVEMENT/MINOR: Added cronjob to use NVME data for warning and critical temperatures (this will be collected during a Force SMART+DB update). This should now follow Unraids default settings.
+
+###2025.02.27
+ - Commit #396 - IMPROVEMENT: Some Help text was outdated and has now been fixed and cleared up, also added some more info for some configurations.
+ - Commit #395 - MINOR: Temperature column not shown. If the temperature is listed to display on e.g. Information tab, it was not shown due to faulty variable name request. The hot/max values are now only displayed in formatted html outputs (Information tab) but not in exported TSV as it can't function when it's outside the Unraid $GLOBALS.
+
+###2025.02.17
+ - Commit #393 - MINOR: Changed old text "Force scan all" to "Force SMART+DB" in Tray Allocations. Remove an unsused section from cronjob.
+ - Commit #391 - IMPROVEMENT: Added global SSD temp variables. Also fixed a minor variable bug related to SMART status.
+ - Commit #389 - FEATURE: Added tray layout orientation. Made it possible to modify the dashboard float. Choices: left, right and "stack" (none).
+ - Commit #387 - BUG: LEDs not always in standby. Altered how they are displayed without losing the ZFS state display priority. Also added separate Disk Location Recovery page under Tools -> Disk Utilities.
+ - Commit #385 - BUG: Fixed a bug that could cause page to not load. Added System tab to be able to be used as standalone, using this address: http://[serveraddr]/plugins/disklocation/pages/page_system.php
+
+###2025.02.16
+ - Commit #383 - BUG: System tab not loading because of array tried to merge with nothing.
+
+###2025.02.15
+ - Commit #381 - BUG: SMART detected as failed when the drives are OK
+ - Commit #380 - BUG: Unexpected files causes System tab to fail. Added a check for unexpected files and also possibility to delete them via System.
+ - Commit #379 - BUG: Disk Tray Layout missing add button has been fixed when a Disk Location is in a clean state.
+
+###2025.02.14
+ - Commit #378 - FEATURE: Added a cleanup function in System. If obsolete files are found, it will show a list of files and a button to delete the files shown. These are only files that are not in use.
+ - Commit #372 - FEATURE: Seagate SMART vs FARM LOG check in System tab added for checking fraudulent drives.
+ - Commit #369 - IMPROVEMENT: Use syslog to detect SMART read events.
+ - Commit #365 - FEATURE: Added selected dashboard info to LED "hover" info on Unraid dashboard.
+ - Commit #362 - FEATURE: Created a possibility to hide/bypass trays in a group.
+ - Commit #361 - IMPROVEMENT: Performance tweak, cleaned up functions and system to improve loading speed.
+ - Commit #360 - IMPROVEMENT: Debug function overhauled and made a bit more useful in some cases.
+ - Commit #352 - FEATURE: Disk Location plugin time benchmark added, but must be executed manually by entering ?benchmark=1 in the address field. Value is visible in the "System" tab.
+ - Commit #351 - FEATURE: Collect SMART errors in an own separate list. Also added possibility to acknowledge all drives at once, but only if plugin is set to allow Unraid config.
+ - Commit #349 - MINOR: A few CSS fixes regarding the LEDs. Mostly changes with the dynamic LEDs.
+ - Commit #348 - MINOR: Fixed color codes, make sure "empty" color will reset or delete the color of devices. Added a group color for default color for specific groups. Also changed default colors, must be reset manually after the plugin update for current users.
+ - Commit #347 - IMPROVEMENT: SAVE button on all Disk Tray Layouts. Deleted the individual Save button on the Disk Tray Layouts, one button to rule them all.. finally.
+ - Commit #346 - IMPROVEMENT: SQLite is removed! It will be automatically converted to multiple json files. This will also prevent sudden database corruptions, obviously. But maybe other type of corruptions? :P However, the backup/restore will still work on older SQLite database backups, they will be automagically converted.
+ - Commit #345 - MINOR: Installation script cleaned up and fixed some bugs.
+ - Commit #344 - IMPROVEMENT: Configuration cleanup. All supported dates can be stored in bulk, if Unraid config edit is enabled.
+ - Commit #343 - IMPROVEMENT: Removed most SMART from the DB, running it in memory instead. Some data will be stored for History purposes.
+ - Commit #342 - FEATURE: Added a customizable plugin dashboard (not to be confused with Unraid dashboard). Formatting of text and positioning possible.
+ - Commit #277 - FEATURE: Added a small simple benchmark for read test (hdparm) with SVG graphs. Can be exported as CSV too.
+
+###2024-2019
+ - The complete changelog will be found here: https://github.com/olehj/disklocation/blob/2024-edition/disklocation-2024-edition.plg#L48
+
+###2019.01.22
+- Initial Release
+</CHANGES>
+
+<!--
+############################################
+# Plugin Install script
+############################################
+-->
+<FILE Name="/tmp/&name;-install" Run="/bin/bash">
+<INLINE>
+<!--
+#################
+# L O G I T
+#################
+-->
+logit()
+{
+  <!--logger -trc.&name; -plocal7.info -is "$1"-->
+  echo ""
+  echo "$1"
+}
+
+DOWNLOAD_PKG="false"
+INSTALL_PKG="false"
+
+if [[ -f "/tmp/disklocation/db.lock" ]]; then
+  logit "Existing cronjob is running in the background, retrying every 5 seconds until it finish..."
+  while [ -f "/tmp/disklocation/db.lock" ];
+  do
+    sleep 5
+    logit "retrying..."
+  done
+  logit "Done. Continuing plugin installation..."
+fi
+
+logit "Removing old plugin data before installing, if they exists..."
+[ -d "&emhttpLOC;" ] &amp;&amp; rm -fR "&emhttpLOC;"
+[ -f "/usr/local/bin/smartlocate" ] &amp;&amp; rm -f "/usr/local/bin/smartlocate"
+[ -f "/tmp/disklocation/db.lock" ] &amp;&amp; rm -f "/tmp/disklocation/db.lock"
+[ -f "/etc/cron.hourly/disklocation.sh" ] &amp;&amp; rm -f "/etc/cron.hourly/disklocation.sh"
+[ -f "/etc/cron.daily/disklocation.sh" ] &amp;&amp; rm -f "/etc/cron.daily/disklocation.sh"
+[ -f "/etc/cron.weekly/disklocation.sh" ] &amp;&amp; rm -f "/etc/cron.weekly/disklocation.sh"
+[ -f "/etc/cron.monthly/disklocation.sh" ] &amp;&amp; rm -f "/etc/cron.monthly/disklocation.sh"
+[ -f "/etc/cron.monthly/disklocation.sh" ] &amp;&amp; rm -f "/etc/cron.monthly/disklocation.sh"
+[ -f "&pluginLOC;/disklocation.noscan" ] &amp;&amp; rm -f "&pluginLOC;/disklocation.noscan"
+[ -f "&pluginLOC;-&branch;/powermode.cron" ] &amp;&amp; rm -f "&pluginLOC;-&branch;/powermode.cron"
+
+logit "Installing plugin..."
+
+<!--# Create plugin folder if needed -->
+if [ ! -d "&pluginLOC;" ] ; then
+  logit "Creating plugin folder &pluginLOC;"
+  mkdir -p "&pluginLOC;"
+else
+  logit "Plugin folder &pluginLOC; already exists"
+fi
+
+<!--# Create plugin-branch folder if needed -->
+if [ ! -d "&pluginLOC;-&branch;" ] ; then
+  logit "Creating plugin folder &pluginLOC;-&branch;"
+  mkdir -p "&pluginLOC;-&branch;"
+else
+  logit "Plugin folder &pluginLOC;-&branch; already exists"
+fi
+
+<!--# Check local package file -->
+logit "Checking existing package &pluginLOC;/&packagefile;..."
+if [ -f "&pluginLOC;/&packagefile;" ] ; then
+  INSTALL_PKG="true"
+else
+  logit "Latest package does not exist &pluginLOC;/&packagefile;"
+  DOWNLOAD_PKG="true"
+fi
+
+<!--# Download plugin files -->
+if [ "$DOWNLOAD_PKG" == "true" ]; then
+
+  <!--# Save existing packages until new package is downloaded OK -->
+  logit "Saving any previous packages from &pluginLOC;"
+  mkdir -p "/tmp/&name;-packages"
+  TEMPOLD="&pluginLOC;/&name;.*.tar.bz2"
+  TEMP="&pluginLOC;/&name;.*.zip"
+  mv -f $TEMPOLD $TEMP "/tmp/&name;-packages/"
+
+  logit "Attempting to download plugin package &packageURL;..."
+  wget -O &pluginLOC;/&packagefile; --quiet --no-check-certificate --timeout=30 &packageURL;
+  if [ ! $? == "0" ] ; then
+    logit "Package server down &packageURL; - Plugin cannot install"
+    INSTALL_PKG="false"
+  else
+    if [ ! -f "&pluginLOC;/&packagefile;" ] ; then
+      logit "Package download failed &packageURL; - Plugin cannot install"
+      INSTALL_PKG="false"
+    else
+      logit "Package &packagefile; downloaded to &pluginLOC;"
+      INSTALL_PKG="true"
+    fi
+  fi
+fi
+
+if [ "$INSTALL_PKG" == "true" ] ; then
+  logit "Extracting plugin package..."
+  <!--# Remove current existing files -->
+  [ -d "&emhttpLOC;" ] &amp;&amp; rm -fR "&emhttpLOC;"
+  <!--# Extract files and move correct directory -->
+  unzip "&pluginLOC;/&packagefile;" -d /tmp/&name;-packages/
+  mv "/tmp/&name;-packages/&name;-&branch;/&name;" "&emplugLOC;/"
+  <!--# Edit PAGE file  - Dynamically add version number -->
+  if [ -f "&emhttpLOC;/&name;.page" ] ; then
+    echo "Version=\"&version;\"" &gt;&gt; "&emhttpLOC;/&name;.page"
+    logit "Extraction done."
+    EXTRACT_PKG="true"
+  else
+    logit "Extraction failed."
+    EXTRACT_PKG="false"
+  fi
+fi
+
+if [ "$EXTRACT_PKG" == "true" ] ; then
+  logit "Installing files..."
+  <!--# Add locate bash script -->
+  cat &gt;/usr/local/bin/smartlocate &lt;&lt;EOL
+#!/bin/bash
+
+# Simple hack to locate harddrives in hotswap arrays,
+#   might not work on all drives or SSD's.
+#
+# Run: ./smartlocate [address]
+#  Ex: ./smartlocate 8:0:0:0
+#
+# Check addresses available: ls -l /dev/bsg/
+#
+# Script needs to be interrupted: [CTRL]+[C]
+#   or killed: pkill -f smartlocate
+#
+# Made by &author; &lt;ole@gidderikke.no&gt;
+
+while sleep 0.5; do
+  pkill -f smartctl &amp;&gt; /dev/null
+  smartctl -x /dev/bsg/\&#36;1 &amp;&gt; /dev/null
+done
+EOL
+  chmod +x /usr/local/bin/smartlocate
+  rm -Rf "/tmp/&name;-packages"
+  rm -f "/tmp/&name;-install"
+  
+  php -f &emhttpLOC;/pages/page_system.php backup auto
+
+logit "Configuring..."
+<!--# Get sub-configuration-->
+  if [ -f "&pluginLOC;/disklocation.conf" ]; then
+    DISKLOCATION_CSS_SIGNALS=($(jq -re '.signal_css // empty' &pluginLOC;/disklocation.conf))
+  fi
+  
+  if [ -f "&pluginLOC;/settings.json" ]; then
+    DISKLOCATION_CSS_SIGNALS=($(jq -re '.signal_css // empty' &pluginLOC;/settings.json))
+  fi
+
+  <!--# Stylesheet configuration-->
+  if [ -z $DISKLOCATION_CSS_SIGNALS ]; then
+    DISKLOCATION_CSS_SIGNALS="signals.dynamic.css"
+  fi
+
+  ln -s &emhttpLOC;/pages/styles/$DISKLOCATION_CSS_SIGNALS &emhttpLOC;/pages/styles/signals.css
+  logit "Stylesheets: $DISKLOCATION_CSS_SIGNALS activated."
+
+  logit "Installing cronjob..."
+  <!--# Add cronjob for Disk Location -->
+  cat &gt;&pluginLOC;-&branch;/disklocation.cron &lt;&lt;EOL
+# Crontab for Disk Location plugin to retrieve SMART data, power status and run backup in the background.
+56 */12 * * * php -f &emhttpLOC;/pages/cronjob.php start silent &amp;&gt; /dev/null
+*/5 * * * * php -f &emhttpLOC;/pages/cronjob.php start status silent &amp;&gt; /dev/null
+*/5 * * * * php -f &emhttpLOC;/pages/cronjob.php start syslogread silent &amp;&gt; /dev/null
+0 0 * * * php -f &emhttpLOC;/pages/page_system.php backup auto silent &amp;&gt; /dev/null
+0 5 1 * * php -f &emhttpLOC;/pages/benchmark.php auto silent &amp;&gt; /dev/null
+EOL
+
+  php -f &emhttpLOC;/pages/cronjob.php start status
+  chmod +x &pluginLOC;-&branch;/disklocation.cron
+
+  <!--# Consider if this is an installation or newly booted server. If the system has been running for less than 15 minutes, run cronjob to gather SMART data. @reboot cron does not work on Unraid.-->
+  UPTIME_DATE=`uptime -s`
+  UPTIME_UNIX=`date --date "$UPTIME_DATE" +%s`
+  UPTIME_SEC=$((`date +%s` - $UPTIME_UNIX))
+  if [ $UPTIME_SEC -lt 900 ]; then
+    logit "System newly booted, gathering SMART data"
+    php -f &emhttpLOC;/pages/cronjob.php install
+  else
+    logit "Uptime is above 15 minutes: Force SMART must be started manually unless the files already exists."
+  fi
+  
+  <!--# Update installed cronjob -->
+  /usr/local/sbin/update_cron
+  
+  logit "Plugin installed successfully!"
+  exit 0
+else
+  <!-- Revert back to previous packages -->
+  if [ -f "&pluginLOC;/&packagefile;" ] ; then
+    <!-- Remove bad SHA256 downloaded package if exists -->
+    rm -f "&pluginLOC;/&packagefile;"
+  fi
+  logit "Reverting back to previously saved packages..."
+  TEMP1="/tmp/&name;-packages"
+  TEMP2=$(ls $TEMP1)
+  if [ "$TEMP2" != "" ] ; then
+    OLDTEMP="/tmp/&name;-packages/&name;.*.tar.bz2"
+    TEMP="/tmp/&name;-packages/&name;.*.zip"
+    mv -f $OLDTEMP "&pluginLOC;"
+    mv -f $TEMP "&pluginLOC;"
+    logit "Previous packages restored"
+  else
+    logit "No previous packages to restored"
+  fi
+  rm -Rf "/tmp/&name;-packages"
+  rm -f "/tmp/&name;-install"
+  logit "Plugin install failed"
+  exit 1
+fi
+</INLINE>
+</FILE>
+
+<!--
+############################################
+# plugin Remove method
+############################################
+-->
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+logit()
+{
+  <!--logger -trc.&name; -plocal7.info -is "$1"-->
+  echo "$1"
+  echo ""
+}
+
+if [[ -f "/tmp/disklocation/db.lock" ]]; then
+  logit "Existing cronjob is running in the background, retrying every 5 seconds until it finish..."
+  while [ -f "/tmp/disklocation/db.lock" ];
+  do
+    sleep 5
+    logit "retrying..."
+  done
+  logit "Done. Continuing plugin removal..."
+fi
+
+logit "Removing plugin..."
+[ -f "/tmp/&name;-install" ] &amp;&amp; rm -f "/tmp/&name;-install"
+[ -d "&emhttpLOC;" ] &amp;&amp; rm -fR "&emhttpLOC;"
+[ -f "/usr/local/bin/smartlocate" ] &amp;&amp; rm -f "/usr/local/bin/smartlocate"
+[ -f "/etc/cron.hourly/disklocation.sh" ] &amp;&amp; rm -f "/etc/cron.hourly/disklocation.sh"
+[ -f "/etc/cron.daily/disklocation.sh" ] &amp;&amp; rm -f "/etc/cron.daily/disklocation.sh"
+[ -f "/etc/cron.weekly/disklocation.sh" ] &amp;&amp; rm -f "/etc/cron.weekly/disklocation.sh"
+[ -f "/etc/cron.monthly/disklocation.sh" ] &amp;&amp; rm -f "/etc/cron.monthly/disklocation.sh"
+[ -f "&pluginLOC;/disklocation.noscan" ] &amp;&amp; rm -f "&pluginLOC;/disklocation.noscan"
+[ -d "/tmp/disklocation" ] &amp;&amp; rm -rf "/tmp/disklocation"
+[ -f "&pluginLOC;-&branch;/powermode.cron" ] &amp;&amp; rm -f "&pluginLOC;-&branch;/powermode.cron"
+[ -f "&pluginLOC;-&branch;/disklocation.cron" ] &amp;&amp; rm -f "&pluginLOC;-&branch;/disklocation.cron"
+[ -d "&pluginLOC;-&branch;" ] &amp;&amp; rmdir "&pluginLOC;-&branch;"
+/usr/local/sbin/update_cron
+rm -f &pluginLOC;/disklocation.*.tar.bz2
+rm -f &pluginLOC;/disklocation.*.zip
+logit "Plugin stopped and removed, package files removed from &pluginLOC;, database, settings and the backups are not removed."
+</INLINE>
+</FILE>
+</PLUGIN>

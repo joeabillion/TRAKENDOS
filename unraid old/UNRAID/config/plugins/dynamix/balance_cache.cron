@@ -1,0 +1,3 @@
+# Generated btrfs balance cache schedule:
+0 0 1 * * /usr/local/emhttp/plugins/dynamix/scripts/btrfs_balance start /mnt/cache -dusage=50 &> /dev/null
+
