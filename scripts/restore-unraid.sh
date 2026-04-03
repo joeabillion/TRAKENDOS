@@ -10,7 +10,8 @@
 #   sudo bash /opt/trakend/os/scripts/restore-unraid.sh
 # ============================================================
 
-set -e
+# Don't use set -e — many commands can fail legitimately
+set +e
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -52,9 +53,11 @@ for dev in $(lsblk -d -n -o NAME,TYPE | awk '$2=="disk" {print $1}'); do
   DEVPATH="/dev/$dev"
 
   # Skip the OS drive
-  ROOT_DEV=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
-  ROOT_BASE=$(basename "$ROOT_DEV" 2>/dev/null)
-  [ "$dev" = "$ROOT_BASE" ] && continue
+  ROOT_DEV=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//' || echo "")
+  ROOT_BASE=$(basename "$ROOT_DEV" 2>/dev/null || echo "")
+  [ -n "$ROOT_BASE" ] && [ "$dev" = "$ROOT_BASE" ] && continue
+  # Also skip loop devices
+  [[ "$dev" == loop* ]] && continue
 
   # Check each partition on this drive
   for part in $(lsblk -n -o NAME "$DEVPATH" 2>/dev/null | tail -n +2); do
