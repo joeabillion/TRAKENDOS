@@ -360,6 +360,65 @@ export class ArrayService {
         this.drives.set(drive.id, drive);
       }
 
+      // Include the OS drive's /data partition as usable storage
+      if (rootDev) {
+        try {
+          const rootDevPath = `/dev/${rootDev}`;
+          // Find the data partition (partition 4, labeled TRAKEND_DATA, mounted at /data)
+          let dataPart = '';
+          try {
+            dataPart = execSync('findmnt -n -o SOURCE /data 2>/dev/null', { encoding: 'utf-8' }).trim();
+          } catch { /* ignore */ }
+
+          if (dataPart && fs.existsSync(dataPart)) {
+            const smart = await this.getSmartData(rootDevPath);
+            const rootDisk = devices.find((d: any) => d.name === rootDev);
+
+            const assignment = this.db.prepare(
+              'SELECT * FROM array_drives WHERE device = ?'
+            ).get(dataPart) as any;
+
+            // Get partition size from df
+            let partSize = 0;
+            let partUsed = 0;
+            try {
+              const dfOut = execSync(`df -B1 /data 2>/dev/null | tail -1`, { encoding: 'utf-8' });
+              const parts = dfOut.trim().split(/\s+/);
+              partSize = parseInt(parts[1]) || 0;
+              partUsed = parseInt(parts[2]) || 0;
+            } catch { /* ignore */ }
+
+            const dataDrive: PhysicalDrive = {
+              id: `${rootDisk?.serial || rootDev}-data`,
+              device: dataPart,
+              model: `${(rootDisk?.model || 'OS Drive').trim()} (Data Partition)`,
+              serial: `${(rootDisk?.serial || '').trim()}-data`,
+              size_bytes: partSize,
+              size_human: this.formatBytes(partSize),
+              transport: (rootDisk?.tran || 'nvme').toLowerCase(),
+              rpm: rootDisk?.rota ? 7200 : 0,
+              temperature: smart?.temperature || 0,
+              health: this.assessHealth(smart),
+              smart_passed: smart?.overall === 'PASSED',
+              smart_data: smart || undefined,
+              role: assignment?.role || 'unassigned',
+              slot: assignment?.slot || 0,
+              filesystem: 'ext4',
+              mount_point: '/data',
+              usage_bytes: partUsed,
+              spin_state: 'active',
+              power_on_hours: smart?.power_on_hours || 0,
+              reallocated_sectors: smart?.reallocated_sectors || 0,
+            };
+
+            drives.push(dataDrive);
+            this.drives.set(dataDrive.id, dataDrive);
+          }
+        } catch (error) {
+          this.logger.debug('ARRAY', `Could not add OS data partition: ${error}`);
+        }
+      }
+
       // Record SMART history for tracked drives
       for (const drive of drives) {
         if (drive.smart_data && drive.serial) {
