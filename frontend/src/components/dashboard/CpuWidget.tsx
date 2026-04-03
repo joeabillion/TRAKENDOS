@@ -44,7 +44,7 @@ export const CpuWidget: React.FC = () => {
         </div>
         <div className="p-3 bg-trakend-dark rounded border border-trakend-border">
           <div className="text-xs text-trakend-text-secondary uppercase tracking-wide mb-1">Clock</div>
-          <div className="text-xl font-bold text-trakend-accent">{(stats.cpu.clockSpeed / 1000).toFixed(1)} GHz</div>
+          <div className="text-xl font-bold text-trakend-accent">{((stats.cpu.clockSpeed || 0) / 1000).toFixed(1)} GHz</div>
         </div>
       </div>
 

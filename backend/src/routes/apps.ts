@@ -1,4 +1,5 @@
 import { Router, Response } from 'express';
+import Docker from 'dockerode';
 import { AuthRequest } from '../middleware/auth';
 import { DockerService } from '../services/dockerService';
 import { AppTemplatesService } from '../services/appTemplates';
@@ -141,7 +142,6 @@ export function createAppsRouter(dockerService: DockerService, appTemplates: App
       }
 
       // Use dockerode directly for container creation
-      const Docker = require('dockerode');
       const docker = new Docker({ socketPath: '/var/run/docker.sock' });
       const container = await docker.createContainer(createOptions);
       await container.start();

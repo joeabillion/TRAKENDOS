@@ -11,10 +11,11 @@ export interface AuthRequest extends Request {
 }
 
 export function createToken(userId: string, username: string, role: string = 'user'): string {
+  const options: jwt.SignOptions = { expiresIn: DEFAULT_CONFIG.JWT.EXPIRY as any };
   return jwt.sign(
     { id: userId, username, role },
     DEFAULT_CONFIG.JWT.SECRET,
-    { expiresIn: DEFAULT_CONFIG.JWT.EXPIRY }
+    options
   );
 }
 

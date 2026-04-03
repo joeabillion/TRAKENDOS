@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Plus, Refresh } from 'lucide-react'
+import { Plus, RefreshCw } from 'lucide-react'
 import { useDocker, Container } from '../../hooks/useDocker'
 import { ContainerCard } from './ContainerCard'
 import { AppStore } from './AppStore'
@@ -84,7 +84,7 @@ export const DockerPage: React.FC = () => {
                 disabled={refreshing}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-trakend-surface border border-trakend-border text-trakend-text-secondary hover:text-trakend-text-primary hover:border-trakend-accent transition-colors disabled:opacity-50"
               >
-                <Refresh size={18} className={refreshing ? 'animate-spin' : ''} />
+                <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />
                 Refresh
               </button>
             )}

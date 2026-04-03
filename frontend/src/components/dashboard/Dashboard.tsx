@@ -6,7 +6,7 @@ import { MemoryWidget } from './MemoryWidget'
 import { StorageWidget } from './StorageWidget'
 import { GpuWidget } from './GpuWidget'
 import { NetworkWidget } from './NetworkWidget'
-import { Server, Database, Container } from 'lucide-react'
+import { Server, Database, Box } from 'lucide-react'
 
 export const Dashboard: React.FC = () => {
   const stats = useSystemStats()
@@ -53,7 +53,7 @@ export const Dashboard: React.FC = () => {
             <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6 hover-lift">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-xs uppercase tracking-wide text-trakend-text-secondary">Containers</div>
-                <Container size={16} className="text-trakend-accent" />
+                <Box size={16} className="text-trakend-accent" />
               </div>
               <div className="text-2xl font-bold text-trakend-text-primary">{stats.docker.total}</div>
               <div className="text-xs text-trakend-text-secondary mt-2">

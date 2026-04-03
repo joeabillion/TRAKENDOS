@@ -27,7 +27,7 @@ export const TopBar: React.FC = () => {
   useEffect(() => {
     const fetchUpdateStatus = async () => {
       try {
-        const res = await api.get('/api/updates/status')
+        const res = await api.get('/updates/status')
         setUpdateStatus(res.data)
       } catch {
         // Silently fail — update check is non-critical

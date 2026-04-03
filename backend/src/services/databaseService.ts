@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
 import { EventLogger } from './eventLogger';
 
 export class DatabaseService {
@@ -65,9 +66,18 @@ export class DatabaseService {
     }
   }
 
+  private sanitizeIdentifier(name: string): string {
+    // Only allow alphanumeric and underscore in identifiers
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+      throw new Error(`Invalid identifier: ${name}`);
+    }
+    return `"${name}"`;
+  }
+
   getTableSchema(tableName: string): any {
     try {
-      return this.db.prepare(`PRAGMA table_info(${tableName})`).all();
+      const safeName = this.sanitizeIdentifier(tableName);
+      return this.db.prepare(`PRAGMA table_info(${safeName})`).all();
     } catch (error) {
       this.logger.error('SYSTEM', `Failed to get table schema: ${error}`);
       throw error;
@@ -76,7 +86,8 @@ export class DatabaseService {
 
   getTableData(tableName: string, limit: number = 100, offset: number = 0): any[] {
     try {
-      return this.db.prepare(`SELECT * FROM ${tableName} LIMIT ? OFFSET ?`).all(limit, offset);
+      const safeName = this.sanitizeIdentifier(tableName);
+      return this.db.prepare(`SELECT * FROM ${safeName} LIMIT ? OFFSET ?`).all(limit, offset);
     } catch (error) {
       this.logger.error('SYSTEM', `Failed to get table data: ${error}`);
       throw error;
@@ -94,7 +105,10 @@ export class DatabaseService {
         })
         .join(', ');
 
-      this.db.exec(`CREATE TABLE IF NOT EXISTS ${name} (${columnDefs})`);
+      const safeName = this.sanitizeIdentifier(name);
+      // Also sanitize column names
+      columns.forEach(col => this.sanitizeIdentifier(col.name));
+      this.db.exec(`CREATE TABLE IF NOT EXISTS ${safeName} (${columnDefs})`);
       this.logger.info('SYSTEM', `Table ${name} created`);
     } catch (error) {
       this.logger.error('SYSTEM', `Failed to create table: ${error}`);
@@ -104,7 +118,8 @@ export class DatabaseService {
 
   dropTable(name: string): void {
     try {
-      this.db.exec(`DROP TABLE IF EXISTS ${name}`);
+      const safeName = this.sanitizeIdentifier(name);
+      this.db.exec(`DROP TABLE IF EXISTS ${safeName}`);
       this.logger.info('SYSTEM', `Table ${name} dropped`);
     } catch (error) {
       this.logger.error('SYSTEM', `Failed to drop table: ${error}`);
@@ -112,11 +127,11 @@ export class DatabaseService {
     }
   }
 
-  export(): string {
+  async export(): Promise<string> {
     try {
       // Get the database dump
-      const backup = this.db.backup('/tmp/trakend-backup.db');
-      const fs = require('fs');
+      await this.db.backup('/tmp/trakend-backup.db');
+
       const buffer = fs.readFileSync('/tmp/trakend-backup.db');
       return buffer.toString('base64');
     } catch (error) {
@@ -125,21 +140,32 @@ export class DatabaseService {
     }
   }
 
-  import(data: string): void {
+  async import(data: string): Promise<void> {
     try {
-      const fs = require('fs');
+
       const buffer = Buffer.from(data, 'base64');
       fs.writeFileSync('/tmp/trakend-import.db', buffer);
 
-      // Restore from backup
+      // Restore from backup — read tables from imported DB and insert into main DB
       const backupDb = new Database('/tmp/trakend-import.db');
-      const backupFile = backupDb.backup('/tmp/trakend-backup.db');
-      // Copy tables
-      const tables = backupDb.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all();
+      const tables = backupDb.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).all();
       for (const table of tables as any[]) {
-        const rows = backupDb.prepare(`SELECT * FROM ${table.name}`).all();
-        // Implementation depends on schema
+        const rows = backupDb.prepare(`SELECT * FROM "${table.name}"`).all();
+        if (rows.length > 0) {
+          const columns = Object.keys(rows[0] as Record<string, any>);
+          const placeholders = columns.map(() => '?').join(', ');
+          const insertStmt = this.db.prepare(
+            `INSERT OR REPLACE INTO "${table.name}" (${columns.map(c => `"${c}"`).join(', ')}) VALUES (${placeholders})`
+          );
+          const insertMany = this.db.transaction((rowList: any[]) => {
+            for (const row of rowList) {
+              insertStmt.run(...columns.map(c => row[c]));
+            }
+          });
+          insertMany(rows);
+        }
       }
+      backupDb.close();
 
       this.logger.info('SYSTEM', 'Database imported');
     } catch (error) {
@@ -159,7 +185,8 @@ export class DatabaseService {
 
       for (const table of tables) {
         if (table.type === 'table') {
-          const result = this.db.prepare(`SELECT COUNT(*) as count FROM ${table.name}`).get() as any;
+          const safeTblName = this.sanitizeIdentifier(table.name);
+          const result = this.db.prepare(`SELECT COUNT(*) as count FROM ${safeTblName}`).get() as any;
           totalRows += result.count;
         }
       }

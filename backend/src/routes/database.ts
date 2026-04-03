@@ -66,9 +66,9 @@ export function createDatabaseRouter(dbService: DatabaseService): Router {
     }
   });
 
-  router.get('/export', (req: AuthRequest, res: Response) => {
+  router.get('/export', async (req: AuthRequest, res: Response) => {
     try {
-      const data = dbService.export();
+      const data = await dbService.export();
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Disposition', 'attachment; filename="database.backup"');
       res.send(Buffer.from(data, 'base64'));
@@ -77,7 +77,7 @@ export function createDatabaseRouter(dbService: DatabaseService): Router {
     }
   });
 
-  router.post('/import', (req: AuthRequest, res: Response) => {
+  router.post('/import', async (req: AuthRequest, res: Response) => {
     try {
       const { data } = req.body;
       if (!data) {
@@ -85,7 +85,7 @@ export function createDatabaseRouter(dbService: DatabaseService): Router {
         return;
       }
 
-      dbService.import(data);
+      await dbService.import(data);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: String(error) });

@@ -1,8 +1,9 @@
 import React, { useState } from 'react'
 import { Save, RotateCcw } from 'lucide-react'
 import { ThemeSettings } from './ThemeSettings'
+import { SharesSettings } from './SharesSettings'
 
-type SettingsTab = 'general' | 'ssh' | 'docker' | 'theme' | 'maya' | 'updates'
+type SettingsTab = 'general' | 'ssh' | 'docker' | 'shares' | 'theme' | 'maya' | 'updates'
 
 export const SettingsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('general')
@@ -17,6 +18,7 @@ export const SettingsPage: React.FC = () => {
     { id: 'general', label: 'General' },
     { id: 'ssh', label: 'SSH' },
     { id: 'docker', label: 'Docker' },
+    { id: 'shares', label: 'Shares & Users' },
     { id: 'theme', label: 'Theme' },
     { id: 'maya', label: 'Maya AI' },
     { id: 'updates', label: 'Updates' },
@@ -71,6 +73,7 @@ export const SettingsPage: React.FC = () => {
             {activeTab === 'general' && <GeneralSettings />}
             {activeTab === 'ssh' && <SSHSettings />}
             {activeTab === 'docker' && <DockerSettings />}
+            {activeTab === 'shares' && <SharesSettings />}
             {activeTab === 'theme' && <ThemeSettings />}
             {activeTab === 'maya' && <MayaSettings />}
             {activeTab === 'updates' && <UpdatesSettings />}

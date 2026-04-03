@@ -1,6 +1,5 @@
-import Docker, { Container, Image } from 'dockerode';
+import Docker from 'dockerode';
 import { EventLogger } from './eventLogger';
-import { Stream } from 'stream';
 
 export interface ContainerInfo {
   id: string;
@@ -70,10 +69,14 @@ export class DockerService {
         image: container.Image,
         state: container.State,
         status: container.Status,
-        ports: container.Ports || [],
+        ports: (container.Ports || []).map((p: any) => ({
+          privatePort: p.PrivatePort || p.privatePort || 0,
+          publicPort: p.PublicPort || p.publicPort,
+          type: p.Type || p.type || 'tcp',
+        })),
         created: container.Created * 1000,
-        restartPolicy: container.HostConfig?.RestartPolicy,
-        memory: container.HostConfig?.Memory,
+        restartPolicy: (container.HostConfig as any)?.RestartPolicy,
+        memory: (container.HostConfig as any)?.Memory,
         networkMode: container.HostConfig?.NetworkMode,
       }));
     } catch (error) {
@@ -140,11 +143,12 @@ export class DockerService {
 
       return new Promise((resolve, reject) => {
         let logs = '';
-        stream.on('data', (chunk) => {
+        const readable = stream as unknown as NodeJS.ReadableStream;
+        readable.on('data', (chunk: any) => {
           logs += chunk.toString();
         });
-        stream.on('end', () => resolve(logs));
-        stream.on('error', reject);
+        readable.on('end', () => resolve(logs));
+        readable.on('error', reject);
       });
     } catch (error) {
       this.logger.error('DOCKER', `Failed to get container logs: ${error}`);
@@ -322,11 +326,11 @@ export class DockerService {
     }
   }
 
-  streamContainerStats(containerId: string, onData: (stats: any) => void): Promise<Stream> {
+  streamContainerStats(containerId: string, onData: (stats: any) => void): Promise<NodeJS.ReadableStream> {
     return new Promise((resolve, reject) => {
       const container = this.docker.getContainer(containerId);
 
-      container.stats({ stream: true }, (err, stream) => {
+      container.stats({ stream: true }, (err: any, stream: any) => {
         if (err) {
           reject(err);
           return;
@@ -339,7 +343,7 @@ export class DockerService {
 
         let buffer = '';
 
-        stream.on('data', (chunk) => {
+        stream.on('data', (chunk: any) => {
           buffer += chunk.toString();
           const lines = buffer.split('\n');
 

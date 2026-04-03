@@ -50,6 +50,10 @@ export const LOG_SOURCES = {
   NETWORK: 'NETWORK',
   DISK: 'DISK',
   SECURITY: 'SECURITY',
+  ARRAY: 'ARRAY',
+  FILES: 'FILES',
+  SHARES: 'SHARES',
+  MYSQL: 'MYSQL',
 } as const;
 
 export type SeverityLevel = keyof typeof SEVERITY_LEVELS;

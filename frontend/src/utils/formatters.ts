@@ -1,4 +1,5 @@
 export const formatBytes = (bytes: number, decimals = 2): string => {
+  if (bytes == null || isNaN(bytes)) return '0 B'
   if (bytes === 0) return '0 B'
 
   const k = 1024
@@ -10,6 +11,7 @@ export const formatBytes = (bytes: number, decimals = 2): string => {
 }
 
 export const formatBytesShort = (bytes: number): string => {
+  if (bytes == null || isNaN(bytes)) return '0'
   if (bytes === 0) return '0'
 
   const k = 1024
@@ -20,6 +22,7 @@ export const formatBytesShort = (bytes: number): string => {
 }
 
 export const formatSpeed = (bytesPerSecond: number): string => {
+  if (bytesPerSecond == null || isNaN(bytesPerSecond)) return '0 B/s'
   if (bytesPerSecond === 0) return '0 B/s'
 
   const k = 1024
@@ -30,14 +33,17 @@ export const formatSpeed = (bytesPerSecond: number): string => {
 }
 
 export const formatPercentage = (value: number, decimals = 1): string => {
+  if (value == null || isNaN(value)) return '0%'
   return parseFloat(value.toFixed(decimals)) + '%'
 }
 
 export const formatTemperature = (celsius: number): string => {
+  if (celsius == null || isNaN(celsius)) return '--°C'
   return Math.round(celsius) + '°C'
 }
 
 export const formatUptime = (seconds: number): string => {
+  if (seconds == null || isNaN(seconds)) return '0m'
   const days = Math.floor(seconds / (3600 * 24))
   const hours = Math.floor((seconds % (3600 * 24)) / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)

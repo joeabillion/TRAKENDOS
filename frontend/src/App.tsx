@@ -11,6 +11,8 @@ import { TerminalPage } from './components/terminal/TerminalPage'
 import { LogsPage } from './components/logs/LogsPage'
 import { MayaPage } from './components/maya/MayaPage'
 import { SettingsPage } from './components/settings/SettingsPage'
+import ArrayPage from './components/array/ArrayPage'
+import { FileBrowserPage } from './components/files/FileBrowserPage'
 import { BootScreen } from './components/auth/BootScreen'
 import { LoginPage } from './components/auth/LoginPage'
 import api from './utils/api'
@@ -26,8 +28,10 @@ function AppLayout() {
         <main className="flex-1 overflow-hidden">
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/array" element={<ArrayPage />} />
             <Route path="/docker" element={<DockerPage />} />
             <Route path="/database" element={<DatabasePage />} />
+            <Route path="/files" element={<FileBrowserPage />} />
             <Route path="/terminal" element={<TerminalPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/maya" element={<MayaPage />} />
@@ -45,16 +49,16 @@ export default function App() {
 
   // Check for existing session on mount
   useEffect(() => {
-    const savedToken = sessionStorage.getItem('trakend-token')
+    const savedToken = localStorage.getItem('auth-token')
     if (savedToken) {
       setToken(savedToken)
-      // Still show boot screen even if we have a token
+      api.defaults.headers.common['Authorization'] = `Bearer ${savedToken}`
     }
   }, [])
 
   const handleBootComplete = () => {
     // After boot, check if we have a valid token
-    const savedToken = sessionStorage.getItem('trakend-token')
+    const savedToken = localStorage.getItem('auth-token')
     if (savedToken) {
       setToken(savedToken)
       setAppState('authenticated')
@@ -65,10 +69,10 @@ export default function App() {
 
   const handleLogin = async (username: string, password: string) => {
     try {
-      const response = await api.post('/api/auth/login', { username, password })
+      const response = await api.post('/auth/login', { username, password })
       const newToken = response.data.token
       setToken(newToken)
-      sessionStorage.setItem('trakend-token', newToken)
+      localStorage.setItem('auth-token', newToken)
       // Set token on api instance
       api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
       setAppState('authenticated')

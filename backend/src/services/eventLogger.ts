@@ -79,24 +79,24 @@ export class EventLogger {
     };
   }
 
-  debug(source: LogSource, message: string, metadata?: Record<string, any>): LogEntry {
-    return this.log('DEBUG', source, message, metadata);
+  debug(source: LogSource, message: string, metadata?: Record<string, any>, patternDetected?: string): LogEntry {
+    return this.log('DEBUG', source, message, metadata, patternDetected);
   }
 
-  info(source: LogSource, message: string, metadata?: Record<string, any>): LogEntry {
-    return this.log('INFO', source, message, metadata);
+  info(source: LogSource, message: string, metadata?: Record<string, any>, patternDetected?: string): LogEntry {
+    return this.log('INFO', source, message, metadata, patternDetected);
   }
 
-  warn(source: LogSource, message: string, metadata?: Record<string, any>): LogEntry {
-    return this.log('WARN', source, message, metadata);
+  warn(source: LogSource, message: string, metadata?: Record<string, any>, patternDetected?: string): LogEntry {
+    return this.log('WARN', source, message, metadata, patternDetected);
   }
 
-  error(source: LogSource, message: string, metadata?: Record<string, any>): LogEntry {
-    return this.log('ERROR', source, message, metadata);
+  error(source: LogSource, message: string, metadata?: Record<string, any>, patternDetected?: string): LogEntry {
+    return this.log('ERROR', source, message, metadata, patternDetected);
   }
 
-  critical(source: LogSource, message: string, metadata?: Record<string, any>): LogEntry {
-    return this.log('CRITICAL', source, message, metadata);
+  critical(source: LogSource, message: string, metadata?: Record<string, any>, patternDetected?: string): LogEntry {
+    return this.log('CRITICAL', source, message, metadata, patternDetected);
   }
 
   detectSystemPatterns(systemStats: Record<string, any>): void {
@@ -246,6 +246,10 @@ export class EventLogger {
       NETWORK: 0,
       DISK: 0,
       SECURITY: 0,
+      ARRAY: 0,
+      FILES: 0,
+      SHARES: 0,
+      MYSQL: 0,
     };
 
     for (const entry of byLevel) {

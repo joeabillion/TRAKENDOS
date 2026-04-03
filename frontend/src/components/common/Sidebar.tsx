@@ -2,10 +2,12 @@ import React from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
-  Docker,
+  HardDrive,
+  Container,
   Database,
+  FolderOpen,
   Terminal,
-  LogStream,
+  ScrollText,
   Zap,
   Settings,
   AlertCircle,
@@ -20,10 +22,12 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { path: '/', label: 'Dashboard', icon: <LayoutDashboard size={20} /> },
-  { path: '/docker', label: 'Docker', icon: <Docker size={20} /> },
+  { path: '/array', label: 'Array', icon: <HardDrive size={20} /> },
+  { path: '/docker', label: 'Docker', icon: <Container size={20} /> },
   { path: '/database', label: 'Database', icon: <Database size={20} /> },
+  { path: '/files', label: 'Files', icon: <FolderOpen size={20} /> },
   { path: '/terminal', label: 'Terminal', icon: <Terminal size={20} /> },
-  { path: '/logs', label: 'Logs', icon: <LogStream size={20} /> },
+  { path: '/logs', label: 'Logs', icon: <ScrollText size={20} /> },
   { path: '/maya', label: 'Maya AI', icon: <Zap size={20} /> },
   { path: '/settings', label: 'Settings', icon: <Settings size={20} /> },
 ]

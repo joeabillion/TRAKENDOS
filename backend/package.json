@@ -45,6 +45,11 @@
     "@types/bcryptjs": "^2.4.6",
     "@types/js-yaml": "^4.0.5",
     "@types/mysql": "^2.15.21",
+    "@types/cors": "^2.8.17",
+    "@types/jsonwebtoken": "^9.0.5",
+    "@types/uuid": "^9.0.7",
+    "@types/node-cron": "^3.0.11",
+    "@types/dockerode": "^3.3.23",
     "ts-node": "^10.9.1"
   }
 }

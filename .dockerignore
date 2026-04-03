@@ -1,0 +1,58 @@
+# ===========================================
+# Trakend OS — Docker Build Context Exclusions
+# ===========================================
+# Without this file, Docker sends the ENTIRE project
+# directory (~1.4 GB+) as build context, causing hangs.
+# With it, context drops to ~50 MB.
+
+# Git history (can be 100s of MB)
+.git
+.gitignore
+
+# Node modules (reinstalled inside Docker)
+node_modules
+**/node_modules
+
+# Build outputs (rebuilt inside Docker)
+dist
+**/dist
+build
+**/build
+
+# Previous ISO output (1.5 GB!)
+installer/output
+installer/output/*
+
+# IDE / editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temp files
+*.log
+build-log.txt
+npm-debug.log*
+
+# Documentation (not needed in ISO build)
+docs
+*.md
+!installer/*.md
+
+# Environment files
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Test files
+**/__tests__
+**/*.test.*
+**/*.spec.*
+coverage

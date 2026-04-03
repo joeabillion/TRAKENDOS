@@ -219,8 +219,12 @@ export class MysqlService {
       }
 
       const conn = await this.getConnection();
-      const [[status]] = await conn.query('SHOW GLOBAL STATUS');
-      const statusObj = status as Record<string, any>;
+      const [rows] = await conn.query('SHOW GLOBAL STATUS') as any[];
+      // Convert array of {Variable_name, Value} rows to a lookup object
+      const statusObj: Record<string, any> = {};
+      for (const row of rows as any[]) {
+        statusObj[row.Variable_name] = row.Value;
+      }
 
       return {
         containerRunning: true,
@@ -299,12 +303,13 @@ export class MysqlService {
 
       for (const db of databases as Array<{ SCHEMA_NAME: string }>) {
         try {
-          const [[info]] = await conn.query(`SELECT TABLE_SCHEMA, COUNT(*) as table_count, ROUND(SUM(DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2) as size_mb FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${db.SCHEMA_NAME}' GROUP BY TABLE_SCHEMA`);
+          const [infoRows] = await conn.query(`SELECT TABLE_SCHEMA, COUNT(*) as table_count, ROUND(SUM(DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2) as size_mb FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${db.SCHEMA_NAME}' GROUP BY TABLE_SCHEMA`) as any[];
+          const info = (infoRows as any[])?.[0];
 
           dbList.push({
             name: db.SCHEMA_NAME,
-            tables: (info as any)?.table_count || 0,
-            size: `${(info as any)?.size_mb || 0} MB`,
+            tables: info?.table_count || 0,
+            size: `${info?.size_mb || 0} MB`,
           });
         } catch {
           dbList.push({

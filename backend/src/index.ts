@@ -1,11 +1,13 @@
-import express, { Express, Request, Response } from 'express';
+import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { WebSocketServer, WebSocket } from 'ws';
 import Database from 'better-sqlite3';
-import { createServer } from 'http';
+import { createServer, IncomingMessage } from 'http';
 import path from 'path';
 import fs from 'fs';
+import { Duplex } from 'stream';
+import bcrypt from 'bcryptjs';
 
 import { DEFAULT_CONFIG } from './config/default';
 import { SettingsModel } from './models/settings';
@@ -31,6 +33,12 @@ import { MysqlService } from './services/mysqlService';
 import { createMysqlRouter } from './routes/mysql';
 import { AppTemplatesService } from './services/appTemplates';
 import { createAppsRouter } from './routes/apps';
+import { ArrayService } from './services/arrayService';
+import { createArrayRoutes } from './routes/array';
+import { FileService } from './services/fileService';
+import { createFilesRouter } from './routes/files';
+import { ShareService } from './services/shareService';
+import { createSharesRouter } from './routes/shares';
 
 // Ensure database directory exists
 const dbDir = path.dirname(DEFAULT_CONFIG.DATABASE.PATH);
@@ -59,11 +67,14 @@ const systemMonitor = new SystemMonitor(new WebSocketServer({ noServer: true }),
 const updateService = new UpdateService(db, logger, process.cwd(), DEFAULT_CONFIG.GIT.REPO_URL);
 const mysqlService = new MysqlService(DEFAULT_CONFIG.DOCKER.SOCKET, logger, dockerService);
 const appTemplatesService = new AppTemplatesService();
+const arrayService = new ArrayService(db, logger);
+const fileService = new FileService(logger);
+const shareService = new ShareService(db, logger);
 
 // Set MySQL root password from settings if configured
-const mysqlRootPassword = settingsModel.get('mysql.root_password');
-if (mysqlRootPassword) {
-  mysqlService.setRootPassword(mysqlRootPassword);
+const mysqlRootPasswordRecord = settingsModel.get('mysql.root_password');
+if (mysqlRootPasswordRecord) {
+  mysqlService.setRootPassword(mysqlRootPasswordRecord.value);
 }
 
 // Set Maya dependencies
@@ -75,13 +86,15 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
 // Middleware
-app.use(helmet());
-app.use(cors({ origin: DEFAULT_CONFIG.SERVER.FRONTEND_URL }));
+app.use(helmet({
+  contentSecurityPolicy: false,
+}));
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Request logging
-app.use((req: Request, res: Response, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
@@ -99,8 +112,33 @@ app.get('/health', (req: Request, res: Response) => {
   });
 });
 
+// Simple rate limiter for login attempts
+const loginAttempts = new Map<string, { count: number; lastAttempt: number }>();
+const LOGIN_RATE_LIMIT = 5; // max attempts
+const LOGIN_RATE_WINDOW = 15 * 60 * 1000; // 15 minutes
+
+function checkLoginRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || now - entry.lastAttempt > LOGIN_RATE_WINDOW) {
+    loginAttempts.set(ip, { count: 1, lastAttempt: now });
+    return true;
+  }
+  if (entry.count >= LOGIN_RATE_LIMIT) return false;
+  entry.count++;
+  entry.lastAttempt = now;
+  return true;
+}
+
 // Auth: Login endpoint
 app.post('/api/auth/login', (req: Request, res: Response) => {
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+  if (!checkLoginRateLimit(clientIp)) {
+    logger.warn('SECURITY', `Rate limited login attempt from ${clientIp}`);
+    res.status(429).json({ message: 'Too many login attempts. Try again in 15 minutes.' });
+    return;
+  }
+
   const { username, password } = req.body;
   if (!username || !password) {
     res.status(400).json({ message: 'Username and password are required' });
@@ -108,11 +146,13 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   }
 
   // Check credentials against settings DB (default: admin/trakend)
-  const storedUser = settingsModel.get('auth.username') || 'admin';
-  const storedHash = settingsModel.get('auth.password_hash');
+  const storedUserRecord = settingsModel.get('auth.username');
+  const storedUser = storedUserRecord ? storedUserRecord.value : 'admin';
+  const storedHashRecord = settingsModel.get('auth.password_hash');
+  const storedHash = storedHashRecord ? storedHashRecord.value : null;
 
   // For first run or default, accept admin/trakend
-  const bcrypt = require('bcryptjs');
+
   let valid = false;
   if (storedHash) {
     valid = username === storedUser && bcrypt.compareSync(password, storedHash);
@@ -122,8 +162,8 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     if (valid) {
       // Store hashed default password for future logins
       const hash = bcrypt.hashSync('trakend', 10);
-      settingsModel.set('auth.username', 'admin');
-      settingsModel.set('auth.password_hash', hash);
+      settingsModel.set('auth.username', 'admin', 'auth');
+      settingsModel.set('auth.password_hash', hash, 'auth');
     }
   }
 
@@ -146,16 +186,17 @@ app.post('/api/auth/verify', authMiddleware, (req: Request, res: Response) => {
 // Auth: Change password
 app.post('/api/auth/change-password', authMiddleware, (req: Request, res: Response) => {
   const { currentPassword, newPassword } = req.body;
-  const bcrypt = require('bcryptjs');
-  const storedHash = settingsModel.get('auth.password_hash');
 
-  if (storedHash && !bcrypt.compareSync(currentPassword, storedHash)) {
+  const storedHashRec = settingsModel.get('auth.password_hash');
+  const currentHash = storedHashRec ? storedHashRec.value : null;
+
+  if (currentHash && !bcrypt.compareSync(currentPassword, currentHash)) {
     res.status(401).json({ message: 'Current password is incorrect' });
     return;
   }
 
   const newHash = bcrypt.hashSync(newPassword, 10);
-  settingsModel.set('auth.password_hash', newHash);
+  settingsModel.set('auth.password_hash', newHash, 'auth');
   logger.info('SECURITY', 'Password changed successfully');
   res.json({ message: 'Password updated successfully' });
 });
@@ -171,14 +212,17 @@ app.use('/api/updates', authMiddleware, createUpdatesRouter(updateService));
 app.use('/api/terminal', authMiddleware, createTerminalRouter(terminalService));
 app.use('/api/mysql', authMiddleware, createMysqlRouter(mysqlService));
 app.use('/api/apps', authMiddleware, createAppsRouter(dockerService, appTemplatesService, logger));
+app.use('/api/array', authMiddleware, createArrayRoutes(arrayService));
+app.use('/api/files', authMiddleware, createFilesRouter(fileService));
+app.use('/api/shares', authMiddleware, createSharesRouter(shareService));
 
 // WebSocket server for real-time updates
-wss.on('connection', (ws: WebSocket, req) => {
+wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   const url = req.url || '';
   logger.debug('SYSTEM', `WebSocket connection: ${url}`);
 
-  // System stats stream
-  if (url.startsWith('/ws/stats')) {
+  // System stats stream — accept both /ws and /ws/stats
+  if (url.startsWith('/ws/stats') || url === '/ws' || url === '/ws/') {
     systemMonitor.registerClient(ws);
   }
   // Terminal stream
@@ -202,7 +246,7 @@ wss.on('connection', (ws: WebSocket, req) => {
     // Note: In production, implement actual log streaming
   }
 
-  ws.on('error', (error) => {
+  ws.on('error', (error: Error) => {
     logger.error('SYSTEM', `WebSocket error: ${error}`);
   });
 
@@ -211,15 +255,35 @@ wss.on('connection', (ws: WebSocket, req) => {
   });
 });
 
-// Handle WebSocket upgrade
-server.on('upgrade', (request, socket, head) => {
-  wss.handleUpgrade(request, socket, head, (ws) => {
+// Handle WebSocket upgrade — guard against duplicate calls with the same socket
+server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+  if (socket.destroyed) return;
+  socket.on('error', () => {}); // prevent unhandled error crashes
+  wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
     wss.emit('connection', ws, request);
   });
 });
 
+// Serve frontend static files in production
+const frontendDistPath = path.resolve(process.cwd(), 'frontend', 'dist');
+const frontendDistAlt = path.resolve(__dirname, '..', '..', 'frontend', 'dist');
+const frontendDir = fs.existsSync(frontendDistPath) ? frontendDistPath : 
+                    fs.existsSync(frontendDistAlt) ? frontendDistAlt : null;
+
+if (frontendDir) {
+  app.use(express.static(frontendDir));
+  // SPA catch-all: serve index.html for any non-API route
+  app.get('*', (req: Request, res: Response) => {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/ws/') || req.path === '/health') {
+      res.status(404).json({ error: 'Not found' });
+    } else {
+      res.sendFile(path.join(frontendDir, 'index.html'));
+    }
+  });
+}
+
 // Error handling middleware
-app.use((error: any, req: Request, res: Response) => {
+app.use((error: any, req: Request, res: Response, _next: NextFunction) => {
   logger.error('SYSTEM', `Server error: ${error.message}`);
   res.status(500).json({
     error: 'Internal server error',

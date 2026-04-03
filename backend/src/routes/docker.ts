@@ -1,4 +1,6 @@
 import { Router, Response } from 'express';
+import Docker from 'dockerode';
+import * as jsYaml from 'js-yaml';
 import { AuthRequest } from '../middleware/auth';
 import { DockerService } from '../services/dockerService';
 
@@ -187,7 +189,6 @@ export function createDockerRouter(dockerService: DockerService): Router {
       }
 
       // Prepare container options
-      const Docker = require('dockerode');
       const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 
       const createOptions: any = {
@@ -255,8 +256,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
 
       // Basic YAML validation - check if it's valid YAML
       try {
-        const yamlModule = require('js-yaml');
-        yamlModule.load(yaml);
+        jsYaml.load(yaml);
         res.json({ valid: true });
       } catch (parseError) {
         res.json({ valid: false, error: String(parseError) });

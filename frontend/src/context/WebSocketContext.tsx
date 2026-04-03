@@ -121,7 +121,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const getWsUrl = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
-    return `${protocol}//${host}/ws`
+    return `${protocol}//${host}/ws/stats`
   }
 
   const connectWebSocket = () => {

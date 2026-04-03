@@ -102,7 +102,7 @@ export class SystemMonitor {
   private wss: WebSocketServer;
   private logger: EventLogger;
   private clients: Set<WebSocket> = new Set();
-  private monitoringInterval: NodeJS.Timer | null = null;
+  private monitoringInterval: ReturnType<typeof setInterval> | null = null;
   private cpuHistory: Array<{ timestamp: number; load: number }> = [];
   private readonly HISTORY_SIZE = 150; // 5 minutes of 2-second intervals
 
@@ -164,7 +164,7 @@ export class SystemMonitor {
 
   async getOverview(): Promise<SystemOverview> {
     try {
-      const [cpu, cpuUsage, memory, disks, gpus, networkInterfaces, osInfo, uptime] = await Promise.all([
+      const [cpu, cpuUsage, memory, disks, gpus, networkInterfaces, osInfo] = await Promise.all([
         si.cpu(),
         si.currentLoad(),
         si.mem(),
@@ -172,8 +172,8 @@ export class SystemMonitor {
         this.getGPUInfo(),
         si.networkInterfaces(),
         si.osInfo(),
-        si.uptime(),
       ]);
+      const uptime = si.time().uptime;
 
       // Update CPU history
       this.cpuHistory.push({
@@ -187,11 +187,22 @@ export class SystemMonitor {
 
       const diskInfo = await this.enrichDiskInfo(disks);
 
+      // Map cpus array to our cores format and compute min/max
+      const coresData = (cpuUsage.cpus || []).map((c: any) => ({
+        load: c.load,
+        loadUser: c.loadUser,
+        loadSystem: c.loadSystem,
+        loadIdle: c.loadIdle,
+      }));
+      const coreLoads = coresData.map((c: any) => c.load);
+      const minLoad = coreLoads.length > 0 ? Math.min(...coreLoads) : 0;
+      const maxLoad = coreLoads.length > 0 ? Math.max(...coreLoads) : 0;
+
       return {
         cpu: {
           model: cpu.brand,
           cores: cpu.cores,
-          threads: cpu.threads,
+          threads: (cpu as any).threads || cpu.cores,
           speed: cpu.speed,
         },
         cpuUsage: {
@@ -203,16 +214,16 @@ export class SystemMonitor {
           rawCurrentLoadUser: cpuUsage.rawCurrentLoadUser,
           rawCurrentLoadSystem: cpuUsage.rawCurrentLoadSystem,
           rawCurrentLoadIdle: cpuUsage.rawCurrentLoadIdle,
-          cores: cpuUsage.cores,
+          cores: coresData,
           avgLoad: cpuUsage.avgLoad,
-          minLoad: cpuUsage.minLoad,
-          maxLoad: cpuUsage.maxLoad,
+          minLoad,
+          maxLoad,
           history: this.cpuHistory,
         },
-        memory,
+        memory: { ...memory, swapcached: (memory as any).swapcached || 0 } as MemoryInfo,
         disks: diskInfo,
         gpus,
-        networkInterfaces,
+        networkInterfaces: networkInterfaces as unknown as NetworkInterface[],
         osInfo,
         uptime,
         timestamp: Date.now(),
@@ -274,6 +285,13 @@ export class SystemMonitor {
 
   async getCPUDetailed(): Promise<CPUUsage> {
     const cpuUsage = await si.currentLoad();
+    const coresData = (cpuUsage.cpus || []).map((c: any) => ({
+      load: c.load,
+      loadUser: c.loadUser,
+      loadSystem: c.loadSystem,
+      loadIdle: c.loadIdle,
+    }));
+    const coreLoads = coresData.map((c: any) => c.load);
 
     return {
       currentLoad: cpuUsage.currentLoad,
@@ -284,16 +302,17 @@ export class SystemMonitor {
       rawCurrentLoadUser: cpuUsage.rawCurrentLoadUser,
       rawCurrentLoadSystem: cpuUsage.rawCurrentLoadSystem,
       rawCurrentLoadIdle: cpuUsage.rawCurrentLoadIdle,
-      cores: cpuUsage.cores,
+      cores: coresData,
       avgLoad: cpuUsage.avgLoad,
-      minLoad: cpuUsage.minLoad,
-      maxLoad: cpuUsage.maxLoad,
+      minLoad: coreLoads.length > 0 ? Math.min(...coreLoads) : 0,
+      maxLoad: coreLoads.length > 0 ? Math.max(...coreLoads) : 0,
       history: this.cpuHistory,
     };
   }
 
   async getMemoryDetailed(): Promise<MemoryInfo> {
-    return si.mem();
+    const mem = await si.mem();
+    return { ...mem, swapcached: (mem as any).swapcached || 0 } as MemoryInfo;
   }
 
   async getDisksDetailed(): Promise<DiskInfo[]> {
