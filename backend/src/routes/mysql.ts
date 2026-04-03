@@ -5,42 +5,50 @@ import { MysqlService } from '../services/mysqlService';
 export function createMysqlRouter(mysqlService: MysqlService): Router {
   const router = Router();
 
-  // Status endpoints
-  router.get('/status', async (req: AuthRequest, res: Response) => {
+  // Status endpoints (direct and /server/* aliases for frontend compatibility)
+  const statusHandler = async (req: AuthRequest, res: Response) => {
     try {
       const status = await mysqlService.getStatus();
       res.json(status);
     } catch (error) {
       res.status(500).json({ error: String(error) });
     }
-  });
+  };
+  router.get('/status', statusHandler);
+  router.get('/server/status', statusHandler);
 
-  router.post('/start', async (req: AuthRequest, res: Response) => {
+  const startHandler = async (req: AuthRequest, res: Response) => {
     try {
       await mysqlService.startContainer();
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: String(error) });
     }
-  });
+  };
+  router.post('/start', startHandler);
+  router.post('/server/start', startHandler);
 
-  router.post('/stop', async (req: AuthRequest, res: Response) => {
+  const stopHandler = async (req: AuthRequest, res: Response) => {
     try {
       await mysqlService.stopContainer();
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: String(error) });
     }
-  });
+  };
+  router.post('/stop', stopHandler);
+  router.post('/server/stop', stopHandler);
 
-  router.post('/restart', async (req: AuthRequest, res: Response) => {
+  const restartHandler = async (req: AuthRequest, res: Response) => {
     try {
       await mysqlService.restartContainer();
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: String(error) });
     }
-  });
+  };
+  router.post('/restart', restartHandler);
+  router.post('/server/restart', restartHandler);
 
   // Database endpoints
   router.get('/databases', async (req: AuthRequest, res: Response) => {

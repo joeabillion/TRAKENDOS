@@ -206,6 +206,7 @@ app.use('/api/system', authMiddleware, createSystemRouter(systemMonitor));
 app.use('/api/docker', authMiddleware, createDockerRouter(dockerService));
 app.use('/api/settings', authMiddleware, createSettingsRouter(settingsModel));
 app.use('/api/logs', authMiddleware, createLogsRouter(logger));
+app.use('/api/database', authMiddleware, createMysqlRouter(mysqlService));
 app.use('/api/database', authMiddleware, createDatabaseRouter(databaseService));
 app.use('/api/maya', authMiddleware, createMayaRouter(mayaService));
 app.use('/api/updates', authMiddleware, createUpdatesRouter(updateService));
