@@ -146,16 +146,87 @@ export class SystemMonitor {
 
   private broadcastStats(): void {
     this.getOverview().then((overview) => {
-      const message = JSON.stringify({
-        type: 'system:stats',
-        data: overview,
-      });
+      // Transform to frontend's expected SystemStats format
+      const frontendStats = {
+        hostname: overview.osInfo.hostname,
+        os: `${overview.osInfo.distro} ${overview.osInfo.release}`,
+        kernel: overview.osInfo.kernel,
+        uptime: overview.uptime,
+        cpu: {
+          model: overview.cpu.model,
+          cores: overview.cpu.cores,
+          threads: overview.cpu.threads,
+          usage: overview.cpuUsage.currentLoad,
+          perCoreUsage: overview.cpuUsage.cores.map((c: any) => c.load),
+          temperature: overview.cpuUsage.cores.length > 0 ? 0 : 0, // si doesn't always provide per-CPU temp
+          clockSpeed: overview.cpu.speed * 1000, // GHz to MHz
+        },
+        memory: {
+          total: overview.memory.total,
+          used: overview.memory.used,
+          free: overview.memory.free,
+          percent: overview.memory.total > 0 ? (overview.memory.used / overview.memory.total) * 100 : 0,
+          sticks: [],
+        },
+        storage: overview.disks.map((d: any) => ({
+          name: d.device,
+          size: d.size,
+          used: d.used,
+          temp: d.temperature || 0,
+          health: d.health || 'good',
+          type: d.type,
+          readSpeed: 0,
+          writeSpeed: 0,
+        })),
+        gpu: overview.gpus.map((g: any) => ({
+          id: g.model,
+          name: g.model,
+          vramTotal: g.vram || 0,
+          vramUsed: g.vramUsed || 0,
+          temperature: g.temperature || 0,
+          utilization: g.utilization || 0,
+          driver: g.driver || '',
+        })),
+        network: (overview.networkInterfaces as any[]).filter((n: any) => n.ip4).map((n: any) => ({
+          name: n.iface,
+          ip: n.ip4,
+          speed: n.ifaceSpeed || 0,
+          rxBytes: 0,
+          txBytes: 0,
+          rxSpeed: 0,
+          txSpeed: 0,
+        })),
+        docker: { running: 0, stopped: 0, total: 0 },
+      };
 
-      for (const client of this.clients) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(message);
+      // Get CPU temperature from si
+      si.cpuTemperature().then((temp: any) => {
+        if (temp && temp.main) {
+          frontendStats.cpu.temperature = temp.main;
         }
-      }
+
+        const message = JSON.stringify({
+          type: 'system-stats',
+          payload: frontendStats,
+        });
+
+        for (const client of this.clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(message);
+          }
+        }
+      }).catch(() => {
+        const message = JSON.stringify({
+          type: 'system-stats',
+          payload: frontendStats,
+        });
+
+        for (const client of this.clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(message);
+          }
+        }
+      });
 
       // Pattern detection
       this.logger.detectSystemPatterns(overview);
