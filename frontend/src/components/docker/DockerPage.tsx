@@ -61,8 +61,8 @@ export const DockerPage: React.FC = () => {
     console.log('Settings for:', id)
   }
 
-  const runningCount = containers.filter((c) => c.status === 'running').length
-  const stoppedCount = containers.filter((c) => c.status !== 'running').length
+  const runningCount = containers.filter((c) => c.state === 'running').length
+  const stoppedCount = containers.filter((c) => c.state !== 'running').length
 
   return (
     <div className="flex-1 overflow-y-auto bg-trakend-dark flex flex-col">

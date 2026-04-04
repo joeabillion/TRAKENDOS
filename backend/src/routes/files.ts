@@ -21,7 +21,15 @@ export function createFilesRouter(fileService: FileService): Router {
       const dirPath = (req.query.path as string) || '/';
       const showHidden = req.query.hidden === 'true';
       const listing = await fileService.listDirectory(dirPath, showHidden);
-      res.json(listing);
+      // Add protection status to each entry
+      const enriched = {
+        ...listing,
+        entries: listing.entries.map((entry: any) => ({
+          ...entry,
+          protected: fileService.isProtected(entry.path),
+        })),
+      };
+      res.json(enriched);
     } catch (error: any) {
       const status = error.code === 'ENOENT' ? 404 : error.code === 'EACCES' ? 403 : 500;
       res.status(status).json({ error: error.message || String(error) });

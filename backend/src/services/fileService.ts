@@ -60,6 +60,49 @@ export class FileService {
     '/proc', '/sys', '/dev', '/run/lock',
   ];
 
+  // System-critical paths that cannot be deleted, moved, or modified
+  private readonly PROTECTED_PATHS = [
+    // Root filesystem
+    '/', '/boot', '/boot/efi', '/etc', '/usr', '/var', '/bin', '/sbin', '/lib', '/lib64',
+    '/root', '/tmp', '/run', '/opt',
+    // Trakend OS application
+    '/opt/trakend', '/opt/trakend/os', '/opt/trakend/os/backend', '/opt/trakend/os/frontend',
+    '/opt/trakend/os/package.json', '/opt/trakend/os/backend/package.json',
+    // System config
+    '/etc/fstab', '/etc/hostname', '/etc/hosts', '/etc/passwd', '/etc/shadow', '/etc/group',
+    '/etc/sudoers', '/etc/ssh', '/etc/systemd', '/etc/docker', '/etc/nginx', '/etc/samba',
+    '/etc/network', '/etc/netplan', '/etc/resolv.conf', '/etc/default/grub',
+    // Docker
+    '/var/run/docker.sock', '/etc/docker/daemon.json',
+    // Data & database directories
+    '/data', '/data/db',
+    // Mount points (top-level only)
+    '/mnt', '/mnt/disks', '/mnt/disks/disk1', '/mnt/disks/disk2', '/mnt/disks/cache',
+    '/mnt/user',
+    // Systemd services
+    '/etc/systemd/system/trakend-os.service',
+    '/etc/systemd/system/docker.service',
+    // GRUB / Boot
+    '/boot/grub', '/boot/grub/grub.cfg', '/boot/vmlinuz', '/boot/initrd.img',
+  ];
+
+  /**
+   * Check if a path is protected from modification/deletion
+   */
+  isProtected(targetPath: string): boolean {
+    const resolved = path.resolve(targetPath);
+    // Exact match
+    if (this.PROTECTED_PATHS.includes(resolved)) return true;
+    // Direct children of critical root dirs (e.g. /etc/anything, /usr/anything)
+    const criticalRoots = ['/', '/boot', '/etc', '/usr', '/var', '/bin', '/sbin', '/lib', '/lib64', '/opt/trakend/os'];
+    for (const root of criticalRoots) {
+      if (resolved === root) return true;
+      // Protect the root dir itself but also first-level children of / (e.g. /home is fine to browse but not delete)
+      if (root === '/' && resolved.split('/').filter(Boolean).length === 1) return true;
+    }
+    return false;
+  }
+
   constructor(logger: EventLogger) {
     this.logger = logger;
   }
@@ -300,11 +343,8 @@ export class FileService {
   async delete(targetPath: string): Promise<void> {
     const resolvedPath = path.resolve(targetPath);
 
-    // Safety: prevent deleting critical paths
-    const criticalPaths = ['/', '/boot', '/etc', '/usr', '/var', '/bin', '/sbin', '/lib',
-                           '/opt/trakend', '/data/db'];
-    if (criticalPaths.includes(resolvedPath)) {
-      throw new Error(`Cannot delete critical system path: ${resolvedPath}`);
+    if (this.isProtected(resolvedPath)) {
+      throw new Error(`Cannot delete protected system path: ${resolvedPath}`);
     }
 
     const stat = await fsp.lstat(resolvedPath);
@@ -322,6 +362,11 @@ export class FileService {
   async rename(oldPath: string, newPath: string): Promise<void> {
     const resolvedOld = path.resolve(oldPath);
     const resolvedNew = path.resolve(newPath);
+
+    if (this.isProtected(resolvedOld)) {
+      throw new Error(`Cannot move/rename protected system path: ${resolvedOld}`);
+    }
+
     await fsp.rename(resolvedOld, resolvedNew);
     this.logger.info('FILES', `Renamed: ${resolvedOld} -> ${resolvedNew}`);
   }
@@ -347,6 +392,9 @@ export class FileService {
    */
   async chmod(targetPath: string, mode: string): Promise<void> {
     const resolvedPath = path.resolve(targetPath);
+    if (this.isProtected(resolvedPath)) {
+      throw new Error(`Cannot change permissions on protected system path: ${resolvedPath}`);
+    }
     await execAsync(`chmod ${mode} "${resolvedPath}"`);
     this.logger.info('FILES', `Changed permissions: ${resolvedPath} -> ${mode}`);
   }
@@ -356,6 +404,9 @@ export class FileService {
    */
   async chown(targetPath: string, owner: string, group?: string): Promise<void> {
     const resolvedPath = path.resolve(targetPath);
+    if (this.isProtected(resolvedPath)) {
+      throw new Error(`Cannot change ownership of protected system path: ${resolvedPath}`);
+    }
     const ownerGroup = group ? `${owner}:${group}` : owner;
     await execAsync(`chown ${ownerGroup} "${resolvedPath}"`);
     this.logger.info('FILES', `Changed ownership: ${resolvedPath} -> ${ownerGroup}`);

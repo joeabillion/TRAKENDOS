@@ -26,7 +26,7 @@ export const ContainerCard: React.FC<ContainerCardProps> = ({
 }) => {
   const [showMenu, setShowMenu] = useState(false)
 
-  const isRunning = container.status === 'running'
+  const isRunning = container.state === 'running'
   const statusColor = isRunning ? 'text-trakend-success' : 'text-trakend-error'
 
   return (
@@ -121,7 +121,7 @@ export const ContainerCard: React.FC<ContainerCardProps> = ({
       <div className="flex items-center gap-2 mb-3">
         <div className="flex items-center gap-1">
           <div className={`w-2 h-2 rounded-full ${isRunning ? 'bg-trakend-success animate-pulse' : 'bg-trakend-error'}`}></div>
-          <span className={`text-xs font-medium uppercase ${statusColor}`}>{container.status}</span>
+          <span className={`text-xs font-medium uppercase ${statusColor}`}>{container.status || container.state}</span>
         </div>
         <div className="text-xs text-trakend-text-secondary">
           {new Date(container.created).toLocaleDateString()}

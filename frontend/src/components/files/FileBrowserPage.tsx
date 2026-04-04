@@ -3,7 +3,7 @@ import {
   FolderOpen, File, HardDrive, ChevronRight, ChevronDown,
   ArrowUp, RefreshCw, Search, Plus, Trash2, Copy, Scissors,
   Edit3, Download, Eye, FolderPlus, FilePlus, MoreVertical,
-  Home, Grid, List, Filter, X, AlertCircle, Check
+  Home, Grid, List, Filter, X, AlertCircle, Check, Lock
 } from 'lucide-react'
 import api from '../../utils/api'
 import clsx from 'clsx'
@@ -24,6 +24,7 @@ interface FileEntry {
   hidden: boolean
   readable: boolean
   writable: boolean
+  protected?: boolean
 }
 
 interface DirectoryListing {
@@ -169,6 +170,12 @@ export const FileBrowserPage: React.FC = () => {
   }
 
   const handleDelete = async (paths: string[]) => {
+    // Check if any selected items are protected
+    const protectedItems = listing?.entries.filter(e => paths.includes(e.path) && e.protected) || []
+    if (protectedItems.length > 0) {
+      notify(`Cannot delete protected system files: ${protectedItems.map(e => e.name).join(', ')}`, 'error')
+      return
+    }
     if (!confirm(`Delete ${paths.length} item(s)? This cannot be undone.`)) return
     for (const p of paths) {
       try {

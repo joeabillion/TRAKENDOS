@@ -2,6 +2,7 @@ import si from 'systeminformation';
 import { WebSocketServer, WebSocket } from 'ws';
 import { EventLogger } from './eventLogger';
 import { execSync } from 'child_process';
+import Docker from 'dockerode';
 
 export interface CPUInfo {
   model: string;
@@ -353,13 +354,13 @@ export class SystemMonitor {
 
   private async getDockerStats(): Promise<{ running: number; stopped: number; total: number }> {
     try {
-      const out = execSync('docker ps -a --format "{{.State}}" 2>/dev/null', { encoding: 'utf-8', timeout: 5000 }).trim();
-      if (!out) return { running: 0, stopped: 0, total: 0 };
-      const states = out.split('\n');
-      const running = states.filter(s => s === 'running').length;
-      const total = states.length;
+      const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+      const containers = await docker.listContainers({ all: true });
+      const total = containers.length;
+      const running = containers.filter((c: any) => c.State === 'running').length;
       return { running, stopped: total - running, total };
-    } catch {
+    } catch (err) {
+      this.logger.debug('SYSTEM', `Docker stats failed: ${err}`);
       return { running: 0, stopped: 0, total: 0 };
     }
   }

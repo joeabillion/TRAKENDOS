@@ -5,6 +5,7 @@ export interface Container {
   id: string
   name: string
   image: string
+  state: string
   status: string
   cpuUsage: number
   memoryUsage: number
@@ -32,8 +33,23 @@ export const useDocker = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get('/docker/containers')
-      return response.data
+      const response = await api.get('/docker/containers?all=true')
+      return (response.data || []).map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        image: c.image,
+        state: c.state || 'unknown',
+        status: c.status || c.state || 'unknown',
+        cpuUsage: c.cpuUsage || 0,
+        memoryUsage: c.memoryUsage || 0,
+        ports: (c.ports || []).map((p: any) => ({
+          containerPort: p.privatePort || p.containerPort || 0,
+          hostPort: p.publicPort || p.hostPort || 0,
+          protocol: p.type || p.protocol || 'tcp',
+        })),
+        uptime: c.startedAt || c.uptime || 0,
+        created: c.created ? new Date(c.created).toISOString() : '',
+      }))
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch containers'
       setError(message)
