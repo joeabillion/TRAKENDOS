@@ -40,6 +40,26 @@ export const TerminalPage: React.FC = () => {
       fontSize: 13,
       lineHeight: 1.4,
       cursorBlink: true,
+      rightClickSelectsWord: true,
+      allowProposedApi: true,
+    })
+
+    // Handle Ctrl+V / Cmd+V paste and Ctrl+C copy
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v' && e.type === 'keydown') {
+        navigator.clipboard.readText().then((text) => {
+          term.paste(text)
+        }).catch(() => {})
+        return false
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c' && e.type === 'keydown') {
+        const sel = term.getSelection()
+        if (sel) {
+          navigator.clipboard.writeText(sel).catch(() => {})
+          return false
+        }
+      }
+      return true
     })
 
     const fitAddon = new FitAddon()
