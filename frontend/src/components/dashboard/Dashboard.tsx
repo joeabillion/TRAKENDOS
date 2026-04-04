@@ -190,7 +190,7 @@ export const Dashboard: React.FC = () => {
         </div>
 
         {/* Widgets Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
           {widgetOrder.map((key, idx) => {
             const w = WIDGET_MAP[key]
             if (!w) return null
