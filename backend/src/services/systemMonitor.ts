@@ -1,6 +1,7 @@
 import si from 'systeminformation';
 import { WebSocketServer, WebSocket } from 'ws';
 import { EventLogger } from './eventLogger';
+import { execSync } from 'child_process';
 
 export interface CPUInfo {
   model: string;
@@ -145,7 +146,7 @@ export class SystemMonitor {
   }
 
   private broadcastStats(): void {
-    this.getOverview().then((overview) => {
+    this.getOverview().then(async (overview) => {
       // Transform to frontend's expected SystemStats format
       const frontendStats = {
         hostname: overview.osInfo.hostname,
@@ -163,9 +164,12 @@ export class SystemMonitor {
         },
         memory: {
           total: overview.memory.total,
-          used: overview.memory.used,
-          free: overview.memory.free,
-          percent: overview.memory.total > 0 ? (overview.memory.used / overview.memory.total) * 100 : 0,
+          used: overview.memory.active || overview.memory.used,
+          free: overview.memory.available || overview.memory.free,
+          percent: overview.memory.total > 0 ? ((overview.memory.active || overview.memory.used) / overview.memory.total) * 100 : 0,
+          buffered: overview.memory.buffers || 0,
+          cached: overview.memory.cached || 0,
+          available: overview.memory.available || 0,
           sticks: [],
         },
         storage: overview.disks.map((d: any) => ({
@@ -196,7 +200,7 @@ export class SystemMonitor {
           rxSpeed: 0,
           txSpeed: 0,
         })),
-        docker: { running: 0, stopped: 0, total: 0 },
+        docker: await this.getDockerStats(),
       };
 
       // Get CPU temperature from si
@@ -306,6 +310,29 @@ export class SystemMonitor {
   }
 
   private async getGPUInfo(): Promise<GPUInfo[]> {
+    // Try nvidia-smi first for NVIDIA GPUs (works better for Tesla/datacenter cards)
+    try {
+      const nvsmi = execSync(
+        'nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,temperature.gpu,utilization.gpu,driver_version --format=csv,noheader,nounits',
+        { encoding: 'utf-8', timeout: 5000 }
+      ).trim();
+      if (nvsmi) {
+        return nvsmi.split('\n').map((line) => {
+          const [model, vramTotal, vramUsed, vramFree, temp, util, driver] = line.split(', ').map(s => s.trim());
+          return {
+            model: model || 'Unknown GPU',
+            vram: parseInt(vramTotal) || 0,
+            vramUsed: parseInt(vramUsed) || 0,
+            vramFree: parseInt(vramFree) || 0,
+            temperature: parseInt(temp) || 0,
+            utilization: parseInt(util) || 0,
+            driver: driver || '',
+          };
+        });
+      }
+    } catch {
+      // nvidia-smi not available, fall back to systeminformation
+    }
     try {
       const graphics = await si.graphics();
       return graphics.controllers.map((controller: any) => ({
@@ -319,6 +346,19 @@ export class SystemMonitor {
       }));
     } catch {
       return [];
+    }
+  }
+
+  private async getDockerStats(): Promise<{ running: number; stopped: number; total: number }> {
+    try {
+      const out = execSync('docker ps -a --format "{{.State}}" 2>/dev/null', { encoding: 'utf-8', timeout: 5000 }).trim();
+      if (!out) return { running: 0, stopped: 0, total: 0 };
+      const states = out.split('\n');
+      const running = states.filter(s => s === 'running').length;
+      const total = states.length;
+      return { running, stopped: total - running, total };
+    } catch {
+      return { running: 0, stopped: 0, total: 0 };
     }
   }
 

@@ -1,7 +1,5 @@
 import React from 'react'
-import { GaugeChart } from '../common/GaugeChart'
 import { useSystemStats } from '../../hooks/useSystemStats'
-import { formatBytes, formatTemperature, formatPercentage } from '../../utils/formatters'
 
 export const GpuWidget: React.FC = () => {
   const stats = useSystemStats()
@@ -9,56 +7,62 @@ export const GpuWidget: React.FC = () => {
   if (!stats || !stats.gpu || stats.gpu.length === 0) {
     return (
       <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-trakend-text-primary mb-4">GPU</h3>
         <div className="text-sm text-trakend-text-secondary">No GPU detected</div>
       </div>
     )
   }
 
+  const formatVram = (mb: number) => {
+    if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`
+    return `${mb} MB`
+  }
+
   return (
     <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
-      <h3 className="text-lg font-semibold text-trakend-text-primary mb-4">GPU</h3>
+      <h3 className="text-lg font-semibold text-trakend-text-primary mb-4">GPU ({stats.gpu.length})</h3>
 
-      <div className="space-y-4">
+      <div className="space-y-3">
         {stats.gpu.map((gpu, i) => {
-          const vramUsagePercent = (gpu.vramUsed / gpu.vramTotal) * 100
+          const vramPct = gpu.vramTotal > 0 ? (gpu.vramUsed / gpu.vramTotal) * 100 : 0
+          const vramColor = vramPct > 80 ? 'bg-trakend-error' : vramPct > 60 ? 'bg-trakend-warning' : 'bg-trakend-info'
 
           return (
-            <div key={i} className="p-4 bg-trakend-dark rounded border border-trakend-border">
-              {/* GPU Header */}
-              <div className="mb-3">
-                <div className="font-semibold text-trakend-text-primary">{gpu.name}</div>
-                <div className="text-xs text-trakend-text-secondary">Driver: {gpu.driver}</div>
+            <div key={i} className="p-3 bg-trakend-dark rounded border border-trakend-border">
+              {/* GPU Name + Driver */}
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-semibold text-trakend-text-primary truncate">{gpu.name}</span>
+                {gpu.driver && <span className="text-[10px] text-trakend-text-secondary ml-2 shrink-0">v{gpu.driver}</span>}
               </div>
 
-              {/* Stats Grid */}
-              <div className="grid grid-cols-2 gap-3">
-                {/* VRAM Usage */}
-                <div className="flex flex-col items-center">
-                  <div className="relative w-24 h-24 mb-2">
-                    <GaugeChart
-                      value={gpu.vramUsed}
-                      max={gpu.vramTotal}
-                      size={100}
-                      color="#3273dc"
-                      label="VRAM"
-                    />
-                  </div>
-                  <div className="text-xs text-trakend-text-secondary text-center">
-                    {formatBytes(gpu.vramUsed)} / {formatBytes(gpu.vramTotal)}
+              {/* Stats Row */}
+              <div className="grid grid-cols-3 gap-2 mb-2">
+                <div className="text-center">
+                  <div className="text-[10px] text-trakend-text-secondary uppercase">Util</div>
+                  <div className={`text-sm font-bold ${gpu.utilization > 80 ? 'text-trakend-error' : 'text-trakend-accent'}`}>
+                    {gpu.utilization}%
                   </div>
                 </div>
+                <div className="text-center">
+                  <div className="text-[10px] text-trakend-text-secondary uppercase">Temp</div>
+                  <div className={`text-sm font-bold ${gpu.temperature > 80 ? 'text-trakend-error' : gpu.temperature > 60 ? 'text-trakend-warning' : 'text-trakend-accent'}`}>
+                    {gpu.temperature > 0 ? `${gpu.temperature}°C` : '--'}
+                  </div>
+                </div>
+                <div className="text-center">
+                  <div className="text-[10px] text-trakend-text-secondary uppercase">VRAM</div>
+                  <div className="text-sm font-bold text-trakend-info">{formatVram(gpu.vramUsed)}</div>
+                </div>
+              </div>
 
-                {/* Other Stats */}
-                <div className="space-y-2">
-                  <div className="p-2 bg-trakend-surface rounded border border-trakend-border">
-                    <div className="text-xs text-trakend-text-secondary uppercase tracking-wide">Utilization</div>
-                    <div className="text-lg font-bold text-trakend-accent">{formatPercentage(gpu.utilization)}</div>
-                  </div>
-                  <div className="p-2 bg-trakend-surface rounded border border-trakend-border">
-                    <div className="text-xs text-trakend-text-secondary uppercase tracking-wide">Temperature</div>
-                    <div className="text-lg font-bold text-trakend-accent">{formatTemperature(gpu.temperature)}</div>
-                  </div>
+              {/* VRAM Bar */}
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-2 bg-trakend-surface rounded-full overflow-hidden">
+                  <div className={`h-full ${vramColor} rounded-full transition-all duration-300`} style={{ width: `${vramPct}%` }} />
                 </div>
+                <span className="text-[10px] text-trakend-text-secondary shrink-0">
+                  {formatVram(gpu.vramUsed)} / {formatVram(gpu.vramTotal)}
+                </span>
               </div>
             </div>
           )

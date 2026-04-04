@@ -19,6 +19,9 @@ export interface SystemStats {
     used: number
     free: number
     percent: number
+    buffered: number
+    cached: number
+    available: number
     sticks: Array<{
       type: string
       speed: string
