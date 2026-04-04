@@ -182,6 +182,7 @@ export class SystemMonitor {
           type: d.type,
           mount: d.mount || '',
           serial: d.serial || '',
+          role: d.role || '',
           readSpeed: 0,
           writeSpeed: 0,
         })),
@@ -368,31 +369,90 @@ export class SystemMonitor {
   private async enrichDiskInfo(disks: any[]): Promise<DiskInfo[]> {
     try {
       const fsSize = await si.fsSize();
+      const blockDevices = await si.blockDevices();
 
-      return disks.map((disk) => {
-        const fsInfo = fsSize.find((fs) => fs.fs.includes(disk.name));
+      // Build a map: physical disk device -> best mount point + usage
+      // blockDevices tells us which partitions belong to which disk
+      // fsSize tells us mount points and usage per partition
+      const enriched: DiskInfo[] = disks.map((disk) => {
+        const diskName = (disk.device || disk.name || '').replace('/dev/', '');
+
+        // Find filesystem entries that belong to this physical disk
+        // e.g. disk.device = '/dev/sda', fsSize has '/dev/sda1', '/dev/sda2' etc.
+        let bestFs: any = null;
+        let bestMount = 'unknown';
+
+        for (const fs of fsSize) {
+          const fsDevice = (fs.fs || '').replace('/dev/', '');
+          // Match: sda1 starts with sda, or md0 matches md0, or dm-0 etc.
+          if (fsDevice.startsWith(diskName) || diskName.startsWith(fsDevice)) {
+            // Prefer the largest or root partition
+            if (!bestFs || fs.mount === '/' || fs.size > (bestFs.size || 0)) {
+              bestFs = fs;
+              bestMount = fs.mount;
+            }
+          }
+        }
+
+        // Also check blockDevices for mount info
+        if (bestMount === 'unknown') {
+          for (const bd of blockDevices) {
+            const bdName = (bd.name || '').replace('/dev/', '');
+            if (bdName.startsWith(diskName) || diskName.startsWith(bdName)) {
+              if (bd.mount && bd.mount !== '') {
+                bestMount = bd.mount;
+                // Try to find matching fsSize for usage data
+                bestFs = fsSize.find(f => f.mount === bd.mount) || bestFs;
+                break;
+              }
+            }
+          }
+        }
+
+        // Detect role from mount path or device name
+        let role = '';
+        const mountLower = bestMount.toLowerCase();
+        const nameLower = diskName.toLowerCase();
+        if (mountLower.includes('parity') || nameLower.includes('parity')) {
+          role = 'parity';
+        } else if (mountLower.includes('cache') || nameLower.includes('cache') || disk.type === 'SSD' || disk.type === 'NVMe') {
+          // NVMe/SSD drives are typically cache in unraid-like setups
+          if (mountLower.includes('cache') || mountLower.includes('/mnt/cache')) {
+            role = 'cache';
+          }
+        }
+        if (mountLower.match(/\/mnt\/disks?\/disk\d+/) || mountLower.match(/\/mnt\/disk\d+/)) {
+          role = 'data';
+        }
+        if (mountLower === '/' || mountLower === '/boot' || mountLower === '/boot/efi') {
+          role = 'os';
+        }
 
         return {
-          device: disk.name,
+          device: disk.device || disk.name,
           type: disk.type,
           size: disk.size,
-          used: fsInfo?.used || 0,
-          available: fsInfo?.available || 0,
-          use: fsInfo?.use || 0,
-          mount: fsInfo?.mount || 'unknown',
-          serial: disk.serial,
+          used: bestFs?.used || 0,
+          available: bestFs?.available || 0,
+          use: bestFs?.use || 0,
+          mount: bestMount,
+          serial: disk.serial || '',
+          role,
         };
       });
-    } catch {
+
+      return enriched;
+    } catch (err) {
+      this.logger.debug('SYSTEM', `enrichDiskInfo error: ${err}`);
       return disks.map((disk) => ({
-        device: disk.name,
+        device: disk.device || disk.name,
         type: disk.type,
         size: disk.size,
         used: 0,
         available: 0,
         use: 0,
         mount: 'unknown',
-        serial: disk.serial,
+        serial: disk.serial || '',
       }));
     }
   }

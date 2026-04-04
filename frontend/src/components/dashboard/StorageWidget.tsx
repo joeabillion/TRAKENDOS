@@ -4,17 +4,32 @@ import { useSystemStats } from '../../hooks/useSystemStats'
 import { formatBytes, formatTemperature, formatPercentage, formatSpeed } from '../../utils/formatters'
 
 function getDriveRole(drive: any): { label: string; priority: number } {
+  const role = (drive.role || '').toLowerCase()
   const name = (drive.name || '').toLowerCase()
   const mount = (drive.mount || '').toLowerCase()
+
+  // Use backend-assigned role first
+  if (role === 'parity') return { label: 'Parity', priority: 0 }
+  if (role === 'cache') return { label: 'Cache', priority: 1 }
+  if (role === 'os') return { label: 'OS', priority: 2 }
+  if (role === 'data') {
+    const diskNum = mount.match(/disk(\d+)/)?.[1]
+    return { label: diskNum ? `Disk ${diskNum}` : 'Data', priority: 4 }
+  }
+
+  // Fallback heuristics from mount path / name
   if (name.includes('parity') || mount.includes('parity')) return { label: 'Parity', priority: 0 }
   if (mount.includes('cache') || name.includes('cache')) return { label: 'Cache', priority: 1 }
   if (mount === '/' || mount === '/boot') return { label: 'OS', priority: 2 }
   if (mount.includes('/data')) return { label: 'Data', priority: 3 }
-  if (mount.includes('/mnt/disks')) {
+  if (mount.includes('/mnt/disks') || mount.includes('/mnt/disk')) {
     const diskNum = mount.match(/disk(\d+)/)?.[1]
     return { label: diskNum ? `Disk ${diskNum}` : 'Disk', priority: 4 }
   }
-  return { label: '', priority: 10 }
+
+  // Use device name as fallback label (e.g. sda, sdb, nvme0n1)
+  const devShort = name.replace('/dev/', '')
+  return { label: devShort || '', priority: 10 }
 }
 
 export const StorageWidget: React.FC = () => {

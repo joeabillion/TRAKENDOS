@@ -35,6 +35,9 @@ export interface SystemStats {
     temp: number
     health: string
     type: string
+    mount: string
+    serial: string
+    role: string
     readSpeed: number
     writeSpeed: number
   }>
