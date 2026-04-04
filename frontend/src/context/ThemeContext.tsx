@@ -13,11 +13,11 @@ interface ThemeColors {
 }
 
 const defaultDarkTheme: ThemeColors = {
-  primary: '#1a1a1a',
-  secondary: '#2a2a2a',
-  accent: '#ff6b35',
-  background: '#0f0f0f',
-  surface: '#3a3a3a',
+  primary: '#1e2128',
+  secondary: '#252830',
+  accent: '#2ab5b2',
+  background: '#171a1f',
+  surface: '#2e3240',
   success: '#00d4aa',
   warning: '#ffa502',
   error: '#ff3860',
@@ -26,10 +26,10 @@ const defaultDarkTheme: ThemeColors = {
 
 const defaultLightTheme: ThemeColors = {
   primary: '#ffffff',
-  secondary: '#f5f5f5',
-  accent: '#ff6b35',
-  background: '#fafafa',
-  surface: '#eeeeee',
+  secondary: '#f5f6fa',
+  accent: '#2ab5b2',
+  background: '#eef0f5',
+  surface: '#e8eaf0',
   success: '#00d4aa',
   warning: '#ffa502',
   error: '#ff3860',
@@ -69,12 +69,15 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
     const root = document.documentElement
     root.style.setProperty('--color-bg-primary', colors.primary)
+    root.style.setProperty('--color-bg-darker', colors.background)
     root.style.setProperty('--color-bg-secondary', colors.secondary)
     root.style.setProperty('--color-surface', colors.surface)
-    root.style.setProperty('--color-border', adjustBrightness(colors.surface, -20))
-    root.style.setProperty('--color-text-primary', isDark ? '#e5e5e5' : '#1a1a1a')
-    root.style.setProperty('--color-text-secondary', isDark ? '#a0a0a0' : '#666666')
+    root.style.setProperty('--color-border', adjustBrightness(colors.surface, isDark ? -15 : -10))
+    root.style.setProperty('--color-text-primary', isDark ? '#e2e4e9' : '#1a1f2e')
+    root.style.setProperty('--color-text-secondary', isDark ? '#8b8fa3' : '#6b7280')
     root.style.setProperty('--color-accent', colors.accent)
+    root.style.setProperty('--color-accent-dark', adjustBrightness(colors.accent, -15))
+    root.style.setProperty('--color-accent-light', adjustBrightness(colors.accent, 20))
     root.style.setProperty('--color-success', colors.success)
     root.style.setProperty('--color-warning', colors.warning)
     root.style.setProperty('--color-error', colors.error)

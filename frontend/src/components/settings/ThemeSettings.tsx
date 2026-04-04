@@ -18,12 +18,27 @@ export const ThemeSettings: React.FC = () => {
 
   const presets = [
     {
-      name: 'Dark (Default)',
+      name: 'Trakend (Default)',
       colors: {
-        primary: '#1a1a1a',
-        secondary: '#2a2a2a',
+        primary: '#1e2128',
+        secondary: '#252830',
+        accent: '#2ab5b2',
+        background: '#171a1f',
+        surface: '#2e3240',
+        success: '#00d4aa',
+        warning: '#ffa502',
+        error: '#ff3860',
+        info: '#3273dc',
+      },
+    },
+    {
+      name: 'Midnight',
+      colors: {
+        primary: '#0f0f0f',
+        secondary: '#1a1a1a',
         accent: '#ff6b35',
-        surface: '#3a3a3a',
+        background: '#080808',
+        surface: '#2a2a2a',
         success: '#00d4aa',
         warning: '#ffa502',
         error: '#ff3860',
@@ -36,6 +51,7 @@ export const ThemeSettings: React.FC = () => {
         primary: '#0a0e27',
         secondary: '#1a2a47',
         accent: '#00d9ff',
+        background: '#060a1e',
         surface: '#2a3a57',
         success: '#00ff88',
         warning: '#ffaa00',
@@ -49,6 +65,7 @@ export const ThemeSettings: React.FC = () => {
         primary: '#0f1419',
         secondary: '#1a2f1a',
         accent: '#4ade80',
+        background: '#0a0f0a',
         surface: '#2a3f2a',
         success: '#86efac',
         warning: '#fbbf24',

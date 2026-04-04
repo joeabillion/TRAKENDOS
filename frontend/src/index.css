@@ -3,15 +3,16 @@
 @tailwind utilities;
 
 :root {
-  --color-bg-primary: #1a1a1a;
-  --color-bg-secondary: #2a2a2a;
-  --color-surface: #3a3a3a;
-  --color-border: #444444;
-  --color-text-primary: #e5e5e5;
-  --color-text-secondary: #a0a0a0;
-  --color-accent: #ff6b35;
-  --color-accent-dark: #e55a24;
-  --color-accent-light: #ff8c5a;
+  --color-bg-primary: #1e2128;
+  --color-bg-darker: #171a1f;
+  --color-bg-secondary: #252830;
+  --color-surface: #2e3240;
+  --color-border: #363a48;
+  --color-text-primary: #e2e4e9;
+  --color-text-secondary: #8b8fa3;
+  --color-accent: #2ab5b2;
+  --color-accent-dark: #229e9b;
+  --color-accent-light: #3ec9c6;
   --color-success: #00d4aa;
   --color-warning: #ffa502;
   --color-error: #ff3860;
@@ -228,7 +229,7 @@ textarea:focus,
 select:focus {
   outline: none;
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.1);
+  box-shadow: 0 0 0 3px rgba(42, 181, 178, 0.15);
 }
 
 input[type="checkbox"],
@@ -264,5 +265,5 @@ button:disabled {
 
 .xterm .xterm-selection,
 .xterm .xterm-selection div {
-  background-color: rgba(255, 107, 53, 0.2) !important;
+  background-color: rgba(42, 181, 178, 0.2) !important;
 }
