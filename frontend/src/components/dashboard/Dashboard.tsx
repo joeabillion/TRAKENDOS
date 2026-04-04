@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useCallback, useRef, useEffect } from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
 import { formatBytes } from '../../utils/formatters'
 import { CpuWidget } from './CpuWidget'
@@ -6,13 +6,83 @@ import { MemoryWidget } from './MemoryWidget'
 import { StorageWidget } from './StorageWidget'
 import { GpuWidget } from './GpuWidget'
 import { NetworkWidget } from './NetworkWidget'
-import { Server, Cpu, HardDrive, Box } from 'lucide-react'
+import { Server, Cpu, HardDrive, Box, Lock, Unlock, GripVertical } from 'lucide-react'
+
+const WIDGET_MAP: Record<string, { label: string; component: React.FC }> = {
+  cpu: { label: 'CPU', component: CpuWidget },
+  memory: { label: 'Memory', component: MemoryWidget },
+  gpu: { label: 'GPU', component: GpuWidget },
+  storage: { label: 'Storage', component: StorageWidget },
+  network: { label: 'Network', component: NetworkWidget },
+}
+
+const DEFAULT_ORDER = ['cpu', 'memory', 'gpu', 'storage', 'network']
+const STORAGE_KEY = 'trakend-dashboard-widget-order'
+
+function loadOrder(): string[] {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) {
+      const parsed = JSON.parse(saved) as string[]
+      if (Array.isArray(parsed) && parsed.every(k => k in WIDGET_MAP)) return parsed
+    }
+  } catch { /* ignore */ }
+  return [...DEFAULT_ORDER]
+}
+
+function saveOrder(order: string[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(order))
+}
 
 export const Dashboard: React.FC = () => {
   const stats = useSystemStats()
+  const [widgetOrder, setWidgetOrder] = useState<string[]>(loadOrder)
+  const [locked, setLocked] = useState(true)
+  const [dragIdx, setDragIdx] = useState<number | null>(null)
+  const [overIdx, setOverIdx] = useState<number | null>(null)
+  const dragNode = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => { saveOrder(widgetOrder) }, [widgetOrder])
+
+  const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
+    if (locked) return
+    setDragIdx(idx)
+    dragNode.current = e.currentTarget as HTMLDivElement
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(idx))
+    requestAnimationFrame(() => {
+      if (dragNode.current) dragNode.current.style.opacity = '0.4'
+    })
+  }, [locked])
+
+  const handleDragEnd = useCallback(() => {
+    if (dragNode.current) dragNode.current.style.opacity = '1'
+    setDragIdx(null)
+    setOverIdx(null)
+    dragNode.current = null
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (dragIdx !== null && idx !== dragIdx) setOverIdx(idx)
+  }, [dragIdx])
+
+  const handleDrop = useCallback((e: React.DragEvent, idx: number) => {
+    e.preventDefault()
+    if (dragIdx === null || dragIdx === idx) return
+    setWidgetOrder(prev => {
+      const next = [...prev]
+      const [moved] = next.splice(dragIdx, 1)
+      next.splice(idx, 0, moved)
+      return next
+    })
+    setDragIdx(null)
+    setOverIdx(null)
+  }, [dragIdx])
 
   return (
-    <div className="flex-1 overflow-y-auto bg-trakend-dark">
+    <div className="bg-trakend-dark min-h-full">
       <div className="p-6 w-full">
         {/* Quick Stats Row */}
         {stats && (
@@ -64,17 +134,54 @@ export const Dashboard: React.FC = () => {
           </div>
         )}
 
-        {/* Main Widgets - 3 column on wide screens */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 mb-6">
-          <CpuWidget />
-          <MemoryWidget />
-          <GpuWidget />
+        {/* Lock / Unlock toggle */}
+        <div className="flex items-center justify-end mb-3">
+          <button
+            onClick={() => setLocked(!locked)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+            style={{
+              background: locked ? 'transparent' : 'var(--color-accent)',
+              color: locked ? 'var(--color-text-secondary)' : '#fff',
+              border: locked ? '1px solid var(--color-border)' : '1px solid transparent',
+            }}
+            title={locked ? 'Unlock widgets to rearrange' : 'Lock widgets in place'}
+          >
+            {locked ? <Lock size={13} /> : <Unlock size={13} />}
+            {locked ? 'Locked' : 'Unlocked — drag to rearrange'}
+          </button>
         </div>
 
-        {/* Storage + Network - Full Width */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          <StorageWidget />
-          <NetworkWidget />
+        {/* Widgets Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+          {widgetOrder.map((key, idx) => {
+            const w = WIDGET_MAP[key]
+            if (!w) return null
+            const Comp = w.component
+            return (
+              <div
+                key={key}
+                draggable={!locked}
+                onDragStart={e => handleDragStart(e, idx)}
+                onDragEnd={handleDragEnd}
+                onDragOver={e => handleDragOver(e, idx)}
+                onDrop={e => handleDrop(e, idx)}
+                className="relative group"
+                style={{
+                  transition: 'transform 0.15s, box-shadow 0.15s',
+                  transform: overIdx === idx && dragIdx !== null ? 'scale(1.02)' : 'scale(1)',
+                  boxShadow: overIdx === idx && dragIdx !== null ? '0 0 0 2px var(--color-accent)' : 'none',
+                  borderRadius: '0.5rem',
+                }}
+              >
+                {!locked && (
+                  <div className="absolute top-2 left-2 z-10 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity bg-trakend-dark/80 rounded p-1">
+                    <GripVertical size={16} className="text-trakend-text-secondary" />
+                  </div>
+                )}
+                <Comp />
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
