@@ -179,6 +179,8 @@ export class SystemMonitor {
           temp: d.temperature || 0,
           health: d.health || 'good',
           type: d.type,
+          mount: d.mount || '',
+          serial: d.serial || '',
           readSpeed: 0,
           writeSpeed: 0,
         })),
