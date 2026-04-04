@@ -43,16 +43,34 @@ export const MayaPage: React.FC = () => {
     setChatMessage('')
     setChatHistory((prev) => [...prev, { role: 'user', message: userMsg }])
 
+    setChatHistory((prev) => [...prev, { role: 'maya', message: '...' }])
     try {
       const response = await chat(userMsg)
-      setChatHistory((prev) => [...prev, { role: 'maya', message: response }])
+      setChatHistory((prev) => {
+        const updated = [...prev]
+        // Replace the last '...' placeholder with real response
+        const lastIdx = updated.length - 1
+        if (lastIdx >= 0 && updated[lastIdx].message === '...') {
+          updated[lastIdx] = { role: 'maya', message: response }
+        } else {
+          updated.push({ role: 'maya', message: response })
+        }
+        return updated
+      })
     } catch (error) {
-      console.error('Chat error:', error)
+      setChatHistory((prev) => {
+        const updated = [...prev]
+        const lastIdx = updated.length - 1
+        if (lastIdx >= 0 && updated[lastIdx].message === '...') {
+          updated[lastIdx] = { role: 'maya', message: 'Sorry, something went wrong. Please try again.' }
+        }
+        return updated
+      })
     }
   }
 
   return (
-    <div className="flex-1 bg-trakend-dark h-screen flex flex-col overflow-hidden">
+    <div className="flex-1 bg-trakend-dark flex flex-col overflow-hidden">
       <div className="flex h-full gap-4 overflow-hidden">
         {/* Left Panel - Controls & Status */}
         <div className="w-80 bg-trakend-surface border-r border-trakend-border flex flex-col overflow-hidden">
@@ -84,7 +102,7 @@ export const MayaPage: React.FC = () => {
 
               <div className="flex flex-col items-center mb-4">
                 <div className="relative w-32 h-32">
-                  <GaugeChart value={mayaStatus.healthScore} max={100} size={128} color="#ff6b35" />
+                  <GaugeChart value={mayaStatus.healthScore} max={100} size={128} color="var(--color-accent, #2ab5b2)" />
                 </div>
               </div>
 
@@ -181,7 +199,7 @@ export const MayaPage: React.FC = () => {
               chatHistory.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
-                    className={`max-w-sm px-4 py-3 rounded-lg ${
+                    className={`max-w-2xl px-4 py-3 rounded-lg whitespace-pre-wrap ${
                       msg.role === 'user'
                         ? 'bg-trakend-accent text-white'
                         : 'bg-trakend-surface text-trakend-text-primary border border-trakend-border'

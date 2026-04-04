@@ -178,7 +178,7 @@ export const DatabasePage: React.FC = () => {
   }
 
   return (
-    <div className="flex-1 bg-trakend-dark h-screen flex flex-col overflow-hidden">
+    <div className="flex-1 bg-trakend-dark h-full flex flex-col overflow-hidden">
       <div className="flex h-full overflow-hidden">
         {/* Left Sidebar */}
         <div className="w-80 bg-trakend-surface border-r border-trakend-border flex flex-col overflow-hidden">

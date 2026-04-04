@@ -27,7 +27,20 @@ export const useMaya = () => {
     setError(null)
     try {
       const response = await api.get('/maya/status')
-      return response.data
+      const d = response.data
+      return {
+        online: d.enabled ?? true,
+        currentTask: d.lastAction ? {
+          id: d.lastAction.id,
+          type: d.lastAction.type,
+          status: d.lastAction.status,
+          progress: d.lastAction.status === 'completed' ? 100 : 50,
+          startTime: new Date(d.lastAction.created_at).toISOString(),
+          endTime: d.lastAction.completed_at ? new Date(d.lastAction.completed_at).toISOString() : undefined,
+        } : null,
+        healthScore: 100 - (d.notificationCount || 0) * 10,
+        lastCheckTime: new Date().toISOString(),
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch Maya status'
       setError(message)
@@ -56,7 +69,7 @@ export const useMaya = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.post('/maya/deep-scan')
+      const response = await api.post('/maya/scan')
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start deep scan'
@@ -86,7 +99,7 @@ export const useMaya = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.post('/maya/find-duplicates')
+      const response = await api.post('/maya/duplicates')
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start duplicate search'
@@ -99,11 +112,11 @@ export const useMaya = () => {
 
   const chat = useCallback(async (message: string): Promise<string> => {
     try {
-      const response = await api.post('/maya/chat', { message })
+      const response = await api.post('/maya/chat', { message }, { timeout: 120000 })
       return response.data.response || ''
     } catch (err) {
       console.error('Failed to send message to Maya:', err)
-      return 'Sorry, I encountered an error processing your request.'
+      return 'Sorry, I encountered an error processing your request. The AI model may be loading — please try again in a moment.'
     }
   }, [])
 

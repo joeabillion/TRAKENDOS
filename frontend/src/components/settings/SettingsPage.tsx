@@ -25,7 +25,7 @@ export const SettingsPage: React.FC = () => {
   ]
 
   return (
-    <div className="flex-1 bg-trakend-dark h-screen flex flex-col overflow-hidden">
+    <div className="flex-1 bg-trakend-dark h-full flex flex-col overflow-hidden">
       <div className="flex h-full overflow-hidden">
         {/* Tab Navigation */}
         <div className="w-56 bg-trakend-surface border-r border-trakend-border flex flex-col">
