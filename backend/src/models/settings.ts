@@ -260,7 +260,7 @@ export class SettingsModel {
     const defaults: MayaSettings = {
       enabled: true,
       ollama_url: 'http://localhost:11435',
-      model: 'qwen2.5:32b',
+      model: 'gemma3:27b',
       auto_repair: false,
       auto_optimize: false,
     };

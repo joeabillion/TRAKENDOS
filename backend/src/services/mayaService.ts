@@ -103,7 +103,7 @@ export class MayaService {
       const settings = this.settingsModel.getMayaSettings();
       return settings.model;
     }
-    return 'qwen2.5:32b';
+    return 'gemma3:27b';
   }
 
   private buildSystemPrompt(): void {
