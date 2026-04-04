@@ -270,6 +270,87 @@ export const FileBrowserPage: React.FC = () => {
     return () => document.removeEventListener('click', handler)
   }, [])
 
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ignore if typing in an input
+      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return
+
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'c') { e.preventDefault(); handleCopy() }
+        if (e.key === 'x') { e.preventDefault(); handleCut() }
+        if (e.key === 'v') { e.preventDefault(); handlePaste() }
+        if (e.key === 'a') {
+          e.preventDefault()
+          if (listing) setSelectedItems(new Set(listing.entries.map(e => e.path)))
+        }
+      }
+      if (e.key === 'Delete' && selectedItems.size > 0) {
+        e.preventDefault()
+        handleDelete(Array.from(selectedItems))
+      }
+      if (e.key === 'F2' && selectedItems.size === 1) {
+        e.preventDefault()
+        const path = Array.from(selectedItems)[0]
+        const entry = listing?.entries.find(e => e.path === path)
+        if (entry) { setRenameTarget(path); setRenameValue(entry.name) }
+      }
+      if (e.key === 'Escape') {
+        setSelectedItems(new Set())
+        setContextMenu(null)
+        setShowPreview(null)
+      }
+      if (e.key === 'Backspace' && listing?.parent) {
+        e.preventDefault()
+        goUp()
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [selectedItems, clipboard, listing])
+
+  // Drag & drop state
+  const [draggedPaths, setDraggedPaths] = useState<string[]>([])
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+
+  const handleDragStart = (e: React.DragEvent, entry: FileEntry) => {
+    const paths = selectedItems.has(entry.path) ? Array.from(selectedItems) : [entry.path]
+    setDraggedPaths(paths)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', paths.join('\n'))
+  }
+
+  const handleDragOver = (e: React.DragEvent, targetPath: string) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDropTarget(targetPath)
+  }
+
+  const handleDragLeave = () => {
+    setDropTarget(null)
+  }
+
+  const handleDrop = async (e: React.DragEvent, targetDir: string) => {
+    e.preventDefault()
+    setDropTarget(null)
+    if (draggedPaths.length === 0) return
+
+    for (const src of draggedPaths) {
+      const name = src.split('/').pop()
+      const dest = `${targetDir}/${name}`
+      if (src === dest || src === targetDir) continue
+      try {
+        await api.post('/files/rename', { oldPath: src, newPath: dest })
+      } catch (err: any) {
+        notify(`Failed to move: ${err?.response?.data?.error}`, 'error')
+        break
+      }
+    }
+    notify(`Moved ${draggedPaths.length} item(s)`)
+    setDraggedPaths([])
+    loadDirectory(currentPath)
+  }
+
   // ── Render ──
 
   return (
@@ -393,9 +474,13 @@ export const FileBrowserPage: React.FC = () => {
             <button
               key={i}
               onClick={() => navigate(m.mountpoint)}
+              onDragOver={e => handleDragOver(e, m.mountpoint)}
+              onDragLeave={handleDragLeave}
+              onDrop={e => handleDrop(e, m.mountpoint)}
               className={clsx(
                 'w-full text-left px-3 py-2.5 hover:bg-trakend-surface-light border-b border-trakend-border/50',
-                currentPath.startsWith(m.mountpoint) && 'bg-trakend-surface-light'
+                currentPath.startsWith(m.mountpoint) && 'bg-trakend-surface-light',
+                dropTarget === m.mountpoint && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
               )}
             >
               <div className="flex items-center gap-2">
@@ -420,7 +505,13 @@ export const FileBrowserPage: React.FC = () => {
           <div className="p-3 text-xs font-semibold text-trakend-text-secondary uppercase tracking-wider mt-2">Quick Access</div>
           {['/', '/data', '/data/shares', '/data/docker', '/data/backups', '/mnt/disks', '/tmp'].map(p => (
             <button key={p} onClick={() => navigate(p)}
-              className="w-full text-left px-3 py-2 text-sm text-trakend-text-secondary hover:bg-trakend-surface-light hover:text-trakend-text-primary">
+              onDragOver={e => handleDragOver(e, p)}
+              onDragLeave={handleDragLeave}
+              onDrop={e => handleDrop(e, p)}
+              className={clsx(
+                'w-full text-left px-3 py-2 text-sm text-trakend-text-secondary hover:bg-trakend-surface-light hover:text-trakend-text-primary',
+                dropTarget === p && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
+              )}>
               {p}
             </button>
           ))}
@@ -495,9 +586,15 @@ export const FileBrowserPage: React.FC = () => {
                     {listing.entries.map(entry => (
                       <tr
                         key={entry.path}
+                        draggable
+                        onDragStart={e => handleDragStart(e, entry)}
+                        onDragOver={entry.type === 'directory' ? (e => handleDragOver(e, entry.path)) : undefined}
+                        onDragLeave={entry.type === 'directory' ? handleDragLeave : undefined}
+                        onDrop={entry.type === 'directory' ? (e => handleDrop(e, entry.path)) : undefined}
                         className={clsx(
                           'border-b border-trakend-border/30 hover:bg-trakend-surface-light/50 cursor-pointer group',
-                          selectedItems.has(entry.path) && 'bg-trakend-accent/10'
+                          selectedItems.has(entry.path) && 'bg-trakend-accent/10',
+                          dropTarget === entry.path && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
                         )}
                         onDoubleClick={() => entry.type === 'directory' ? navigate(entry.path) : handlePreview(entry.path)}
                         onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, entry }) }}
@@ -561,9 +658,15 @@ export const FileBrowserPage: React.FC = () => {
                   {listing.entries.map(entry => (
                     <div
                       key={entry.path}
+                      draggable
+                      onDragStart={e => handleDragStart(e, entry)}
+                      onDragOver={entry.type === 'directory' ? (e => handleDragOver(e, entry.path)) : undefined}
+                      onDragLeave={entry.type === 'directory' ? handleDragLeave : undefined}
+                      onDrop={entry.type === 'directory' ? (e => handleDrop(e, entry.path)) : undefined}
                       className={clsx(
                         'p-3 rounded-lg text-center cursor-pointer hover:bg-trakend-surface-light group border border-transparent',
-                        selectedItems.has(entry.path) && 'bg-trakend-accent/10 border-trakend-accent/30'
+                        selectedItems.has(entry.path) && 'bg-trakend-accent/10 border-trakend-accent/30',
+                        dropTarget === entry.path && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
                       )}
                       onDoubleClick={() => entry.type === 'directory' ? navigate(entry.path) : handlePreview(entry.path)}
                       onClick={() => toggleSelect(entry.path)}
