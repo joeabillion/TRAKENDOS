@@ -259,8 +259,8 @@ export class SettingsModel {
   getMayaSettings(): MayaSettings {
     const defaults: MayaSettings = {
       enabled: true,
-      ollama_url: 'http://localhost:11434',
-      model: 'neural-chat',
+      ollama_url: 'http://localhost:11435',
+      model: 'qwen2.5:32b',
       auto_repair: false,
       auto_optimize: false,
     };

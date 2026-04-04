@@ -79,6 +79,7 @@ if (mysqlRootPasswordRecord) {
 
 // Set Maya dependencies
 mayaService.setDependencies(systemMonitor, dockerService);
+mayaService.setSettingsModel(settingsModel);
 
 // Create Express app
 const app: Express = express();

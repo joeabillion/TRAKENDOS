@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { EventLogger } from './eventLogger';
 import { SystemMonitor } from './systemMonitor';
 import { DockerService } from './dockerService';
+import { SettingsModel } from '../models/settings';
 
 export interface MayaNotification {
   id: string;
@@ -32,6 +33,7 @@ export interface MayaAction {
 }
 
 import MAYA_KNOWLEDGE_BASE, {
+  PLATFORM_OVERVIEW,
   DOS,
   DONTS,
   WATCHLIST,
@@ -67,17 +69,82 @@ export class MayaService {
   private logger: EventLogger;
   private systemMonitor?: SystemMonitor;
   private dockerService?: DockerService;
+  private settingsModel?: SettingsModel;
   private actionQueue: MayaAction[] = [];
+  private conversationHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+  private systemPromptCache: string = '';
 
   constructor(db: Database.Database, logger: EventLogger) {
     this.db = db;
     this.logger = logger;
     this.initializeTables();
+    this.buildSystemPrompt();
   }
 
   setDependencies(systemMonitor: SystemMonitor, dockerService: DockerService): void {
     this.systemMonitor = systemMonitor;
     this.dockerService = dockerService;
+  }
+
+  setSettingsModel(settingsModel: SettingsModel): void {
+    this.settingsModel = settingsModel;
+  }
+
+  private getOllamaUrl(): string {
+    if (this.settingsModel) {
+      const settings = this.settingsModel.getMayaSettings();
+      return settings.ollama_url;
+    }
+    return 'http://localhost:11435';
+  }
+
+  private getModel(): string {
+    if (this.settingsModel) {
+      const settings = this.settingsModel.getMayaSettings();
+      return settings.model;
+    }
+    return 'qwen2.5:32b';
+  }
+
+  private buildSystemPrompt(): void {
+    const dosRules = DOS.slice(0, 10).map((d) => `- ${d.rule}`).join('\n');
+    const dontsRules = DONTS.slice(0, 8).map((d) => `- ${d.rule}`).join('\n');
+    const watchItems = WATCHLIST.slice(0, 6).map((w) => `- ${w.metric}: warn at ${w.warningThreshold}%, critical at ${w.criticalThreshold}%`).join('\n');
+    const repairList = REPAIR_PROCEDURES.map((r) => `- ${r.name} (${r.autoApproved ? 'auto' : 'needs approval'})`).join('\n');
+    const patternList = KNOWN_PATTERNS.slice(0, 6).map((p) => `- ${p.name}: ${p.rootCause}`).join('\n');
+
+    this.systemPromptCache = `You are Maya, the AI operations assistant for Trakend OS — a server management operating system similar to Unraid.
+
+Your role: Monitor system health 24/7, investigate issues, perform repairs, optimize performance, and help the administrator manage their server.
+
+Platform: ${PLATFORM_OVERVIEW.description}
+Architecture: Backend is ${PLATFORM_OVERVIEW.architecture.backend}, Frontend is ${PLATFORM_OVERVIEW.architecture.frontend}, containers via ${PLATFORM_OVERVIEW.architecture.containerEngine}.
+
+Key principle: ${PLATFORM_OVERVIEW.keyPrinciple}
+
+Your rules (DO):
+${dosRules}
+
+Your rules (DO NOT):
+${dontsRules}
+
+Monitoring thresholds:
+${watchItems}
+
+Available repair procedures:
+${repairList}
+
+Known issue patterns:
+${patternList}
+
+Behavior guidelines:
+- Be concise but thorough. Use bullet points for lists.
+- When diagnosing, explain your reasoning step by step.
+- Always suggest specific actions the admin can take.
+- If you detect a critical issue, be direct and urgent.
+- You can reference system stats, Docker containers, disk health, etc.
+- Never make up data — if you don't have real-time info, say so and suggest running a scan.
+- You are friendly, professional, and proactive.`;
   }
 
   private initializeTables(): void {
@@ -431,85 +498,117 @@ export class MayaService {
     relevantPatterns: string[];
     suggestedActions: string[];
   }> {
-    const lowerMessage = message.toLowerCase();
-
-    let response = "I'm Maya, your Trakend OS AI assistant. I monitor system health, investigate issues, perform repairs, and optimize performance. How can I help?";
-    let relevantDos: string[] = [];
-    let relevantDonts: string[] = [];
-    let relevantPatterns: string[] = [];
-    let suggestedActions: string[] = [];
-
-    // Match against knowledge base topics
-    if (lowerMessage.includes('docker') || lowerMessage.includes('container')) {
-      response = 'I can help with Docker containers. I monitor container health, detect restart loops, track resource usage, and can restart crashed containers automatically. What would you like me to do?';
-      relevantDos = DOS.filter((d) => d.category === 'maintenance' || d.rule.toLowerCase().includes('docker'))
-        .map((d) => d.rule);
-      relevantDonts = DONTS.filter((d) => d.rule.toLowerCase().includes('container') || d.rule.toLowerCase().includes('docker'))
-        .map((d) => d.rule);
-      relevantPatterns = KNOWN_PATTERNS.filter((p) =>
-        p.symptoms.some((s) => s.toLowerCase().includes('container')))
-        .map((p) => `${p.name}: ${p.rootCause}`);
-      suggestedActions = ['investigate', 'scan', 'optimize'];
-    } else if (lowerMessage.includes('disk') || lowerMessage.includes('storage') || lowerMessage.includes('drive')) {
-      response = 'Storage is critical. I track disk usage, SMART health data, predict when drives will fill up, and detect failing disks before data loss. I can also find duplicate files to free space.';
-      relevantDos = DOS.filter((d) => d.rule.toLowerCase().includes('disk') || d.category === 'maintenance')
-        .map((d) => d.rule);
-      relevantDonts = DONTS.filter((d) => d.rule.toLowerCase().includes('file') || d.rule.toLowerCase().includes('delete'))
-        .map((d) => d.rule);
-      relevantPatterns = KNOWN_PATTERNS.filter((p) =>
-        p.name.toLowerCase().includes('disk') || p.symptoms.some((s) => s.toLowerCase().includes('disk')))
-        .map((p) => `${p.name}: ${p.solution}`);
-      suggestedActions = ['investigate disk:', 'scan', 'find duplicates'];
-    } else if (lowerMessage.includes('memory') || lowerMessage.includes('ram') || lowerMessage.includes('oom')) {
-      response = 'I keep a close eye on memory. I can detect memory leaks, identify memory-heavy containers, and warn before OOM kills happen. Want me to investigate current memory usage?';
-      relevantPatterns = KNOWN_PATTERNS.filter((p) => p.name.toLowerCase().includes('oom'))
-        .map((p) => `${p.name}: ${p.solution}`);
-      suggestedActions = ['investigate memory', 'optimize'];
-    } else if (lowerMessage.includes('security') || lowerMessage.includes('login') || lowerMessage.includes('ssh')) {
-      response = 'Security is my top priority. I monitor login attempts, detect brute force attacks, and audit SSH configuration. I also check container privilege levels and network exposure.';
-      relevantDos = DOS.filter((d) => d.category === 'security').map((d) => d.rule);
-      relevantDonts = DONTS.filter((d) => d.category === 'safety').map((d) => d.rule);
-      suggestedActions = ['scan'];
-    } else if (lowerMessage.includes('cpu') || lowerMessage.includes('processor') || lowerMessage.includes('temperature') || lowerMessage.includes('thermal')) {
-      response = 'I monitor CPU usage per-core, temperatures, and detect thermal throttling. I can identify runaway processes and suggest container CPU limits. Shall I run a diagnostic?';
-      relevantPatterns = KNOWN_PATTERNS.filter((p) => p.name.toLowerCase().includes('thermal'))
-        .map((p) => `${p.name}: ${p.solution}`);
-      suggestedActions = ['investigate', 'optimize'];
-    } else if (lowerMessage.includes('network') || lowerMessage.includes('dns') || lowerMessage.includes('packet')) {
-      response = 'Network health is essential. I watch for packet loss, bandwidth saturation, DNS failures, and interface errors. I can diagnose connectivity issues between containers too.';
-      relevantPatterns = KNOWN_PATTERNS.filter((p) =>
-        p.name.toLowerCase().includes('dns') || p.name.toLowerCase().includes('network'))
-        .map((p) => `${p.name}: ${p.solution}`);
-      suggestedActions = ['investigate', 'scan'];
-    } else if (lowerMessage.includes('repair') || lowerMessage.includes('fix') || lowerMessage.includes('heal')) {
-      response = 'I have several repair procedures: restarting crashed containers, clearing build cache, fixing permissions, rotating oversized logs, fixing DNS, and clearing zombie processes. Some I can do automatically, others need your approval first.';
-      suggestedActions = REPAIR_PROCEDURES.map((r) => `${r.name} (${r.autoApproved ? 'auto' : 'needs approval'})`);
-    } else if (lowerMessage.includes('optimize') || lowerMessage.includes('performance') || lowerMessage.includes('tune')) {
-      response = 'I can optimize container resource allocation, clean up unused Docker images, tune system services, optimize network settings, and improve storage I/O. Want me to start an optimization analysis?';
-      suggestedActions = OPTIMIZATION_PROCEDURES.map((o) => `${o.name} (${o.frequency})`);
-    } else if (lowerMessage.includes('scan') || lowerMessage.includes('check') || lowerMessage.includes('health')) {
-      response = 'I can run a quick health scan or a comprehensive deep search. The deep search audits system health, security, performance baselines, and storage integrity. Which would you prefer?';
-      suggestedActions = ['Quick scan', 'Deep search (comprehensive)', 'Security audit'];
-    } else if (lowerMessage.includes('help') || lowerMessage.includes('what can you do') || lowerMessage.includes('capability')) {
-      response = `I'm Maya, your AI operations assistant for Trakend OS. Here's what I can do:
-
-- Monitor: Real-time CPU, memory, disk, GPU, network, and Docker health
-- Investigate: Trace issues to their root cause using diagnostic procedures
-- Repair: Restart crashed services, clear caches, fix permissions, rotate logs
-- Optimize: Right-size containers, clean unused images, tune system settings
-- Detect: Find duplicate files, predict disk fill dates, spot anomalies
-- Protect: Monitor for brute force attacks, audit security, check SMART data
-
-I follow strict rules: I never delete data without permission, never auto-update the OS, and never expose sensitive information. Everything I do is logged for your review.`;
-      suggestedActions = ['scan', 'optimize', 'investigate'];
-    } else if (lowerMessage.includes('duplicate') || lowerMessage.includes('cleanup')) {
-      response = 'I can scan your drives for duplicate files using hash comparison. I\'ll show you what I find and you decide what to keep. I never delete anything without your explicit permission.';
-      suggestedActions = ['find duplicates'];
+    // Gather real-time system context to inject into the conversation
+    let systemContext = '';
+    try {
+      if (this.systemMonitor) {
+        const overview = await this.systemMonitor.getOverview();
+        const memPercent = ((overview.memory.used / overview.memory.total) * 100).toFixed(1);
+        const diskSummary = overview.disks.map((d: any) => {
+          const usage = d.size > 0 ? ((d.used / d.size) * 100).toFixed(1) : '0';
+          return `${d.device}(${d.mount || 'unmounted'}): ${usage}% used`;
+        }).join(', ');
+        systemContext += `\n\n[Live System Stats]\nCPU: ${overview.cpuUsage.currentLoad.toFixed(1)}% load, ${overview.cpu.cores} cores\nMemory: ${memPercent}% used (${(overview.memory.used / (1024**3)).toFixed(1)}GB / ${(overview.memory.total / (1024**3)).toFixed(1)}GB)\nDisks: ${diskSummary}`;
+      }
+      if (this.dockerService) {
+        const containers = await this.dockerService.listContainers();
+        const running = containers.filter((c: any) => c.state === 'running').length;
+        const total = containers.length;
+        systemContext += `\nDocker: ${running}/${total} containers running`;
+        // List stopped containers if any
+        const stopped = containers.filter((c: any) => c.state !== 'running');
+        if (stopped.length > 0) {
+          systemContext += ` (stopped: ${stopped.map((c: any) => c.names?.[0]?.replace('/', '') || c.id?.slice(0, 12)).join(', ')})`;
+        }
+      }
+    } catch (err) {
+      this.logger.debug('MAYA', `Failed to gather system context for chat: ${err}`);
     }
 
-    this.logger.debug('MAYA', `Chat: ${message}`, { response: response.substring(0, 100) });
+    // Build messages array for Ollama
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: this.systemPromptCache + systemContext },
+    ];
 
-    return { response, relevantDos, relevantDonts, relevantPatterns, suggestedActions };
+    // Include recent conversation history (last 10 exchanges)
+    const recentHistory = this.conversationHistory.slice(-20);
+    messages.push(...recentHistory);
+    messages.push({ role: 'user', content: message });
+
+    // Try calling Ollama API
+    const ollamaUrl = this.getOllamaUrl();
+    const model = this.getModel();
+    let response = '';
+
+    try {
+      const fetchUrl = `${ollamaUrl}/api/chat`;
+      this.logger.debug('MAYA', `Calling Ollama at ${fetchUrl} with model ${model}`);
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+
+      const res = await fetch(fetchUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages,
+          stream: false,
+          options: {
+            temperature: 0.7,
+            num_predict: 1024,
+          },
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Ollama returned ${res.status}: ${errText}`);
+      }
+
+      const data = await res.json();
+      response = data.message?.content || data.response || '';
+
+      // Save to conversation history
+      this.conversationHistory.push({ role: 'user', content: message });
+      this.conversationHistory.push({ role: 'assistant', content: response });
+
+      // Trim history to last 30 messages
+      if (this.conversationHistory.length > 30) {
+        this.conversationHistory = this.conversationHistory.slice(-30);
+      }
+
+      this.logger.debug('MAYA', `Chat response (${response.length} chars)`);
+    } catch (err: any) {
+      this.logger.warn('MAYA', `Ollama chat failed: ${err.message}`);
+      // Fallback to knowledge-base response
+      response = this.getFallbackResponse(message);
+    }
+
+    // Extract suggested actions from the response context
+    const lowerMessage = message.toLowerCase();
+    let suggestedActions: string[] = [];
+    if (lowerMessage.includes('scan') || lowerMessage.includes('health')) suggestedActions = ['scan', 'optimize'];
+    else if (lowerMessage.includes('docker') || lowerMessage.includes('container')) suggestedActions = ['investigate', 'scan'];
+    else if (lowerMessage.includes('disk') || lowerMessage.includes('storage')) suggestedActions = ['investigate disk:', 'find duplicates'];
+    else if (lowerMessage.includes('repair') || lowerMessage.includes('fix')) suggestedActions = ['scan', 'optimize'];
+
+    return { response, relevantDos: [], relevantDonts: [], relevantPatterns: [], suggestedActions };
+  }
+
+  private getFallbackResponse(message: string): string {
+    const lower = message.toLowerCase();
+    if (lower.includes('help') || lower.includes('what can you do')) {
+      return "I'm Maya, your Trakend OS AI assistant. I can monitor system health, investigate issues, perform repairs, and optimize performance. Note: My AI model appears to be offline right now, so I'm running in limited mode. Check that the Ollama container is running.";
+    }
+    return "I'm having trouble connecting to my AI model right now. Please check that the Ollama container (ollama-maya) is running. You can still use my scan, investigate, and optimize features from the sidebar controls.";
+  }
+
+  clearConversation(): void {
+    this.conversationHistory = [];
   }
 
   createNotification(

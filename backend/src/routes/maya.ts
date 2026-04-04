@@ -115,6 +115,15 @@ export function createMayaRouter(maya: MayaService): Router {
     }
   });
 
+  router.post('/chat/clear', (req: AuthRequest, res: Response) => {
+    try {
+      maya.clearConversation();
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
   // Knowledge base endpoint — retrieve Maya's full instruction set
   router.get('/knowledge-base', (req: AuthRequest, res: Response) => {
     try {
