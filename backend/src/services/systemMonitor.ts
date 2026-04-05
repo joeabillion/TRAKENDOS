@@ -247,7 +247,7 @@ export class SystemMonitor {
         si.cpu(),
         si.currentLoad(),
         si.mem(),
-        si.diskLayout(),
+        this.safeDiskLayout(),
         this.getGPUInfo(),
         si.networkInterfaces(),
         si.osInfo(),
@@ -489,8 +489,22 @@ export class SystemMonitor {
     return { ...mem, swapcached: (mem as any).swapcached || 0 } as MemoryInfo;
   }
 
+  private async safeDiskLayout(): Promise<any[]> {
+    try {
+      const timeout = new Promise<any[]>((_, reject) =>
+        setTimeout(() => reject(new Error('diskLayout timeout')), 10000)
+      );
+      return await Promise.race([si.diskLayout(), timeout]);
+    } catch {
+      return this.lastDiskLayout || [];
+    }
+  }
+
+  private lastDiskLayout: any[] = [];
+
   async getDisksDetailed(): Promise<DiskInfo[]> {
-    const disks = await si.diskLayout();
+    const disks = await this.safeDiskLayout();
+    this.lastDiskLayout = disks;
     return this.enrichDiskInfo(disks);
   }
 
