@@ -6,7 +6,7 @@ import { MemoryWidget } from './MemoryWidget'
 import { StorageWidget } from './StorageWidget'
 import { GpuWidget } from './GpuWidget'
 import { NetworkWidget } from './NetworkWidget'
-import { Server, Cpu, HardDrive, Box, Lock, Unlock, GripVertical, Maximize2, Minimize2, Power, RotateCw } from 'lucide-react'
+import { Server, Cpu, HardDrive, Box, Lock, Unlock, GripVertical, Power, RotateCw } from 'lucide-react'
 import api from '../../utils/api'
 
 const WIDGET_MAP: Record<string, { label: string; component: React.FC }> = {
@@ -19,13 +19,6 @@ const WIDGET_MAP: Record<string, { label: string; component: React.FC }> = {
 
 const DEFAULT_ORDER = ['cpu', 'memory', 'gpu', 'storage', 'network']
 const STORAGE_KEY = 'trakend-dashboard-widget-order'
-const SIZES_KEY = 'trakend-dashboard-widget-sizes'
-
-type WidgetSize = 1 | 2 | 3
-
-const DEFAULT_SIZES: Record<string, WidgetSize> = {
-  cpu: 1, memory: 1, gpu: 1, storage: 1, network: 1,
-}
 
 function loadOrder(): string[] {
   try {
@@ -42,31 +35,10 @@ function saveOrder(order: string[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(order))
 }
 
-function loadSizes(): Record<string, WidgetSize> {
-  try {
-    const saved = localStorage.getItem(SIZES_KEY)
-    if (saved) {
-      const parsed = JSON.parse(saved)
-      if (typeof parsed === 'object') return { ...DEFAULT_SIZES, ...parsed }
-    }
-  } catch { /* ignore */ }
-  return { ...DEFAULT_SIZES }
-}
-
-function saveSizes(sizes: Record<string, WidgetSize>) {
-  localStorage.setItem(SIZES_KEY, JSON.stringify(sizes))
-}
-
-const COL_SPAN_CLASS: Record<WidgetSize, string> = {
-  1: '',
-  2: 'lg:col-span-2',
-  3: 'lg:col-span-2 xl:col-span-3',
-}
 
 export const Dashboard: React.FC = () => {
   const stats = useSystemStats()
   const [widgetOrder, setWidgetOrder] = useState<string[]>(loadOrder)
-  const [widgetSizes, setWidgetSizes] = useState<Record<string, WidgetSize>>(loadSizes)
   const [locked, setLocked] = useState(true)
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [overIdx, setOverIdx] = useState<number | null>(null)
@@ -74,15 +46,6 @@ export const Dashboard: React.FC = () => {
   const dragNode = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => { saveOrder(widgetOrder) }, [widgetOrder])
-  useEffect(() => { saveSizes(widgetSizes) }, [widgetSizes])
-
-  const cycleSize = useCallback((key: string) => {
-    setWidgetSizes(prev => {
-      const current = prev[key] || 1
-      const next: WidgetSize = current === 1 ? 2 : current === 2 ? 3 : 1
-      return { ...prev, [key]: next }
-    })
-  }, [])
 
   const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
     if (locked) return
@@ -209,14 +172,12 @@ export const Dashboard: React.FC = () => {
           </button>
         </div>
 
-        {/* Widgets Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
+        {/* Widgets Stack */}
+        <div className="flex flex-col gap-4">
           {widgetOrder.map((key, idx) => {
             const w = WIDGET_MAP[key]
             if (!w) return null
             const Comp = w.component
-            const size = widgetSizes[key] || 1
-            const sizeLabel = size === 1 ? '1x' : size === 2 ? '2x' : '3x (full)'
             return (
               <div
                 key={key}
@@ -225,10 +186,10 @@ export const Dashboard: React.FC = () => {
                 onDragEnd={handleDragEnd}
                 onDragOver={e => handleDragOver(e, idx)}
                 onDrop={e => handleDrop(e, idx)}
-                className={`relative group ${COL_SPAN_CLASS[size]}`}
+                className="relative group w-full"
                 style={{
                   transition: 'transform 0.15s, box-shadow 0.15s',
-                  transform: overIdx === idx && dragIdx !== null ? 'scale(1.02)' : 'scale(1)',
+                  transform: overIdx === idx && dragIdx !== null ? 'scale(1.005)' : 'scale(1)',
                   boxShadow: overIdx === idx && dragIdx !== null ? '0 0 0 2px var(--color-accent)' : 'none',
                   borderRadius: '0.5rem',
                 }}
@@ -238,16 +199,6 @@ export const Dashboard: React.FC = () => {
                     <div className="cursor-grab active:cursor-grabbing bg-trakend-dark/80 rounded p-1">
                       <GripVertical size={16} className="text-trakend-text-secondary" />
                     </div>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); cycleSize(key) }}
-                      className="bg-trakend-dark/80 rounded p-1 hover:bg-trakend-accent/40 transition-colors"
-                      title={`Resize widget (current: ${sizeLabel})`}
-                    >
-                      {size < 3
-                        ? <Maximize2 size={14} className="text-trakend-text-secondary" />
-                        : <Minimize2 size={14} className="text-trakend-text-secondary" />}
-                    </button>
-                    <span className="text-[10px] text-trakend-text-secondary bg-trakend-dark/80 rounded px-1.5 py-0.5 font-mono">{sizeLabel}</span>
                   </div>
                 )}
                 <Comp />
