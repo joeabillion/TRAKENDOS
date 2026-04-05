@@ -341,6 +341,20 @@ const start = async () => {
       totalMemory: overview.memory.total,
     });
 
+    // Auto-start array on boot if it was previously running or auto_start is enabled
+    try {
+      const arrayConfig = arrayService.getArrayConfig();
+      if (arrayConfig.auto_start && arrayConfig.state !== 'stopped') {
+        // Reset state so startArray() doesn't reject with "already running"
+        arrayConfig.state = 'stopped';
+        logger.info('SYSTEM', 'Auto-starting array (was previously running)...');
+        await arrayService.startArray();
+        logger.info('SYSTEM', 'Array auto-started successfully');
+      }
+    } catch (error) {
+      logger.warn('SYSTEM', `Array auto-start failed: ${error}`);
+    }
+
     // Auto-start MariaDB on server boot
     try {
       await mysqlService.ensureMariaDBRunning();
