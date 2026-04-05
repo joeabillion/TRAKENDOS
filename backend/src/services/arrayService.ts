@@ -70,6 +70,7 @@ export interface ArrayConfig {
 export interface ArrayDriveAssignment {
   drive_id: string;
   device: string;
+  serial: string;
   role: DriveRole;
   slot: number;
   added_at: number;
@@ -896,18 +897,40 @@ export class ArrayService {
       this.logger.info('ARRAY', 'Docker was not running');
     }
 
-    // Unmount all data drives
+    // Unmount ALL drives (data, cache, unassigned)
     const assignments = this.getAssignedDrives();
     for (const assignment of assignments) {
-      if (assignment.role === 'data') {
-        const mountPoint = `/mnt/disks/disk${assignment.slot}`;
+      let mountPoint: string;
+      if (assignment.role === 'cache') {
+        mountPoint = '/mnt/disks/cache';
+      } else {
+        mountPoint = `/mnt/disks/disk${assignment.slot}`;
+      }
+      try {
+        execSync(`umount "${mountPoint}" 2>/dev/null`, { timeout: 30000 });
+        this.logger.info('ARRAY', `Unmounted ${mountPoint}`);
+      } catch {
         try {
-          execSync(`umount "${mountPoint}" 2>/dev/null`, { timeout: 30000 });
-          this.logger.info('ARRAY', `Unmounted disk${assignment.slot}`);
+          execSync(`umount -l "${mountPoint}" 2>/dev/null`);
+        } catch { /* ignore */ }
+      }
+    }
+
+    // Also unmount any unassigned drives that were mounted during startArray
+    const assignedMounts = new Set<string>();
+    for (const a of assignments) {
+      assignedMounts.add(a.role === 'cache' ? '/mnt/disks/cache' : `/mnt/disks/disk${a.slot}`);
+    }
+    for (const [, drive] of this.drives) {
+      if (drive.mount_point && drive.mount_point.startsWith('/mnt/disks/') && !assignedMounts.has(drive.mount_point)) {
+        try {
+          execSync(`umount "${drive.mount_point}" 2>/dev/null`, { timeout: 30000 });
+          this.logger.info('ARRAY', `Unmounted unassigned drive at ${drive.mount_point}`);
+          drive.mount_point = undefined;
         } catch {
-          // Force unmount
           try {
-            execSync(`umount -l "${mountPoint}" 2>/dev/null`);
+            execSync(`umount -l "${drive.mount_point}" 2>/dev/null`);
+            drive.mount_point = undefined;
           } catch { /* ignore */ }
         }
       }
