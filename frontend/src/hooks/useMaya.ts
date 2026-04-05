@@ -38,7 +38,7 @@ export const useMaya = () => {
           startTime: new Date(d.lastAction.created_at).toISOString(),
           endTime: d.lastAction.completed_at ? new Date(d.lastAction.completed_at).toISOString() : undefined,
         } : null,
-        healthScore: 100 - (d.notificationCount || 0) * 10,
+        healthScore: Math.max(0, Math.min(100, 100 - (d.notificationCount || 0) * 10)),
         lastCheckTime: new Date().toISOString(),
       }
     } catch (err) {

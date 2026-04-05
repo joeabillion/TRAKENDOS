@@ -6,7 +6,8 @@ import { MemoryWidget } from './MemoryWidget'
 import { StorageWidget } from './StorageWidget'
 import { GpuWidget } from './GpuWidget'
 import { NetworkWidget } from './NetworkWidget'
-import { Server, Cpu, HardDrive, Box, Lock, Unlock, GripVertical, Maximize2, Minimize2 } from 'lucide-react'
+import { Server, Cpu, HardDrive, Box, Lock, Unlock, GripVertical, Maximize2, Minimize2, Power, RotateCw } from 'lucide-react'
+import api from '../../utils/api'
 
 const WIDGET_MAP: Record<string, { label: string; component: React.FC }> = {
   cpu: { label: 'CPU', component: CpuWidget },
@@ -69,6 +70,7 @@ export const Dashboard: React.FC = () => {
   const [locked, setLocked] = useState(true)
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [overIdx, setOverIdx] = useState<number | null>(null)
+  const [showPowerConfirm, setShowPowerConfirm] = useState<'reboot' | 'shutdown' | null>(null)
   const dragNode = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => { saveOrder(widgetOrder) }, [widgetOrder])
@@ -172,8 +174,26 @@ export const Dashboard: React.FC = () => {
           </div>
         )}
 
-        {/* Lock / Unlock toggle */}
-        <div className="flex items-center justify-end mb-3">
+        {/* Power Controls & Lock toggle */}
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowPowerConfirm('reboot')}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-warning hover:border-trakend-warning transition-colors"
+              title="Restart Server"
+            >
+              <RotateCw size={13} />
+              Restart
+            </button>
+            <button
+              onClick={() => setShowPowerConfirm('shutdown')}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-error hover:border-trakend-error transition-colors"
+              title="Shut Down Server"
+            >
+              <Power size={13} />
+              Shut Down
+            </button>
+          </div>
           <button
             onClick={() => setLocked(!locked)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
@@ -236,6 +256,45 @@ export const Dashboard: React.FC = () => {
           })}
         </div>
       </div>
+
+      {/* Power Confirmation Dialog */}
+      {showPowerConfirm && (
+        <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50">
+          <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6 max-w-sm w-full mx-4">
+            <h2 className="text-lg font-semibold text-trakend-text-primary mb-2">
+              {showPowerConfirm === 'reboot' ? 'Restart Server?' : 'Shut Down Server?'}
+            </h2>
+            <p className="text-sm text-trakend-text-secondary mb-6">
+              {showPowerConfirm === 'reboot'
+                ? 'The server will restart. You will lose connection temporarily.'
+                : 'The server will shut down. You will need physical access to turn it back on.'}
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowPowerConfirm(null)}
+                className="px-4 py-2 rounded-lg text-sm bg-trakend-surface-light text-trakend-text-secondary hover:text-trakend-text-primary transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await api.post(`/system/${showPowerConfirm === 'reboot' ? 'reboot' : 'shutdown'}`)
+                  } catch {}
+                  setShowPowerConfirm(null)
+                }}
+                className={`px-4 py-2 rounded-lg text-sm text-white transition-colors ${
+                  showPowerConfirm === 'reboot'
+                    ? 'bg-trakend-warning hover:bg-opacity-90'
+                    : 'bg-trakend-error hover:bg-opacity-90'
+                }`}
+              >
+                {showPowerConfirm === 'reboot' ? 'Restart Now' : 'Shut Down Now'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

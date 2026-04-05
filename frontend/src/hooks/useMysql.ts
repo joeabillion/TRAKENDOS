@@ -77,7 +77,16 @@ export const useMysql = () => {
     setError(null)
     try {
       const response = await api.get('/database/server/status')
-      return response.data
+      const d = response.data
+      return {
+        version: d.version || 'MariaDB',
+        uptime: d.uptime || 0,
+        connections: d.connections || 0,
+        maxConnections: d.maxConnections || d.connections || 0,
+        queriesPerSecond: d.questions && d.uptime ? d.questions / d.uptime : 0,
+        threadsConnected: d.connections || 0,
+        threadsRunning: d.threads || 0,
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch server status'
       setError(message)
@@ -234,7 +243,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.post('/database/query', { database, query })
+      const response = await api.post('/database/query', { database, sql: query })
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Query execution failed'

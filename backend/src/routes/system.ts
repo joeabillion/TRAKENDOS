@@ -1,9 +1,28 @@
 import { Router, Response } from 'express';
+import { execSync } from 'child_process';
 import { AuthRequest } from '../middleware/auth';
 import { SystemMonitor } from '../services/systemMonitor';
 
 export function createSystemRouter(systemMonitor: SystemMonitor): Router {
   const router = Router();
+
+  router.post('/reboot', async (req: AuthRequest, res: Response) => {
+    try {
+      res.json({ success: true, message: 'Server rebooting...' });
+      setTimeout(() => { try { execSync('shutdown -r now'); } catch {} }, 500);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  router.post('/shutdown', async (req: AuthRequest, res: Response) => {
+    try {
+      res.json({ success: true, message: 'Server shutting down...' });
+      setTimeout(() => { try { execSync('shutdown -h now'); } catch {} }, 500);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
 
   router.get('/overview', async (req: AuthRequest, res: Response) => {
     try {
