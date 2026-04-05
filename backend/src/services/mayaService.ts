@@ -72,6 +72,8 @@ export class MayaService {
   private settingsModel?: SettingsModel;
   private actionQueue: MayaAction[] = [];
   private systemPromptCache: string = '';
+  private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+  private lastHealthCheck: number = 0;
 
   constructor(db: Database.Database, logger: EventLogger) {
     this.db = db;
@@ -83,6 +85,124 @@ export class MayaService {
   setDependencies(systemMonitor: SystemMonitor, dockerService: DockerService): void {
     this.systemMonitor = systemMonitor;
     this.dockerService = dockerService;
+    // Start background health checks once dependencies are ready
+    this.startBackgroundChecks();
+  }
+
+  stopBackgroundChecks(): void {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+      this.logger.info('MAYA', 'Background health checks stopped');
+    }
+  }
+
+  private startBackgroundChecks(): void {
+    // Run first check after 30 seconds (let system settle after boot)
+    setTimeout(() => this.runHealthCheck(), 30000);
+    // Then every 5 minutes
+    this.healthCheckInterval = setInterval(() => this.runHealthCheck(), 5 * 60 * 1000);
+    this.logger.info('MAYA', 'Background health checks started (every 5 min)');
+  }
+
+  private async runHealthCheck(): Promise<void> {
+    const now = Date.now();
+    // Debounce: don't run more than once per 2 minutes
+    if (now - this.lastHealthCheck < 120000) return;
+    this.lastHealthCheck = now;
+
+    try {
+      this.logger.debug('MAYA', 'Running background health check...');
+
+      // Check system stats
+      if (this.systemMonitor) {
+        const overview = await this.systemMonitor.getOverview();
+
+        // CPU check
+        const cpuLoad = overview.cpuUsage?.currentLoad ?? 0;
+        if (cpuLoad > 95) {
+          this.createNotificationIfNew('cpu-critical', 'error', 'CPU Critical',
+            `CPU usage at ${cpuLoad.toFixed(1)}%. System may become unresponsive.`, 'critical');
+        } else if (cpuLoad > 85) {
+          this.createNotificationIfNew('cpu-warning', 'warning', 'High CPU Usage',
+            `CPU usage at ${cpuLoad.toFixed(1)}%. Consider checking running processes.`, 'medium');
+        }
+
+        // Memory check
+        const memTotal = overview.memory?.total ?? 1;
+        const memUsed = overview.memory?.used ?? 0;
+        const memPercent = (memUsed / memTotal) * 100;
+        if (memPercent > 95) {
+          this.createNotificationIfNew('mem-critical', 'error', 'Memory Critical',
+            `Memory usage at ${memPercent.toFixed(1)}%. OOM kills may occur.`, 'critical');
+        } else if (memPercent > 85) {
+          this.createNotificationIfNew('mem-warning', 'warning', 'High Memory Usage',
+            `Memory usage at ${memPercent.toFixed(1)}%. Consider freeing memory or adding swap.`, 'medium');
+        }
+
+        // Disk check
+        if (overview.disks && Array.isArray(overview.disks)) {
+          for (const disk of overview.disks) {
+            if (!disk.size || disk.size === 0) continue;
+            const diskPercent = (disk.used / disk.size) * 100;
+            const mount = disk.mount || disk.device || 'unknown';
+            if (diskPercent > 95) {
+              this.createNotificationIfNew(`disk-critical-${mount}`, 'error', 'Disk Almost Full',
+                `${mount} is at ${diskPercent.toFixed(1)}% capacity. Immediate action needed.`, 'critical',
+                { type: 'investigate', target: `disk:${mount}` });
+            } else if (diskPercent > 85) {
+              this.createNotificationIfNew(`disk-warning-${mount}`, 'warning', 'Disk Space Low',
+                `${mount} is at ${diskPercent.toFixed(1)}% capacity. Consider cleanup.`, 'medium',
+                { type: 'investigate', target: `disk:${mount}` });
+            }
+          }
+        }
+      }
+
+      // Docker container check
+      if (this.dockerService) {
+        try {
+          const containers = await this.dockerService.listContainers();
+          for (const c of containers) {
+            const name = (c as any).names?.[0]?.replace('/', '') || (c as any).name || (c as any).id?.slice(0, 12) || 'unknown';
+            const state = (c as any).state || '';
+            // Check for unhealthy or restarting containers
+            if (state === 'restarting') {
+              this.createNotificationIfNew(`container-restart-${name}`, 'warning', 'Container Restarting',
+                `Container "${name}" is in a restart loop. It may have crashed.`, 'high',
+                { type: 'investigate', target: `container:${name}` });
+            } else if (state === 'exited' || state === 'dead') {
+              this.createNotificationIfNew(`container-down-${name}`, 'info', 'Container Stopped',
+                `Container "${name}" is ${state}.`, 'low',
+                { type: 'investigate', target: `container:${name}` });
+            }
+          }
+        } catch (err) {
+          this.logger.debug('MAYA', `Docker check failed: ${err}`);
+        }
+      }
+
+      this.logger.debug('MAYA', 'Background health check completed');
+    } catch (err) {
+      this.logger.warn('MAYA', `Background health check error: ${err}`);
+    }
+  }
+
+  private createNotificationIfNew(
+    key: string,
+    type: 'warning' | 'info' | 'success' | 'error',
+    title: string,
+    message: string,
+    severity: 'low' | 'medium' | 'high' | 'critical',
+    action?: { type: 'investigate' | 'repair' | 'optimize' | 'scan'; target: string }
+  ): void {
+    // Check if a similar undismissed notification exists in the last 30 minutes
+    const recent = this.db.prepare(
+      `SELECT id FROM maya_notifications WHERE title = ? AND dismissed = 0 AND created_at > ? LIMIT 1`
+    ).get(title, Date.now() - 30 * 60 * 1000) as any;
+    if (recent) return; // Don't spam
+    this.createNotification(type, title, message, severity, action);
+    this.logger.info('MAYA', `Health alert: ${title} - ${message}`);
   }
 
   setSettingsModel(settingsModel: SettingsModel): void {
