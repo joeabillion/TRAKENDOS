@@ -1,7 +1,7 @@
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { EventLogger } from './eventLogger';
 
@@ -236,26 +236,51 @@ export class FileService {
             try {
               const stat = fs.statSync(mp);
               if (!stat.isDirectory()) continue;
-              // Check if it's actually a mountpoint
-              const { stdout: src } = await execAsync(`findmnt -n -o SOURCE,FSTYPE "${mp}" 2>/dev/null`);
-              if (!src.trim()) continue;
-              const [device, fstype] = src.trim().split(/\s+/);
+
+              // Check if it's actually a mountpoint using mountpoint command
+              try {
+                execSync(`mountpoint -q "${mp}" 2>/dev/null`, { timeout: 5000 });
+              } catch {
+                continue; // not a mountpoint, skip
+              }
+
+              // It's a real mountpoint — get device and fstype
+              let device = 'unknown';
+              let fstype = 'unknown';
+              try {
+                const { stdout: src } = await execAsync(`findmnt -n -o SOURCE,FSTYPE "${mp}" 2>/dev/null`);
+                if (src.trim()) {
+                  const srcParts = src.trim().split(/\s+/);
+                  device = srcParts[0] || 'unknown';
+                  fstype = srcParts[1] || 'unknown';
+                }
+              } catch {
+                // Fallback: try df to get device
+                try {
+                  const { stdout: dfLine } = await execAsync(`df "${mp}" 2>/dev/null | tail -1`);
+                  const dfParts = dfLine.trim().split(/\s+/);
+                  if (dfParts[0]) device = dfParts[0];
+                } catch { /* ignore */ }
+              }
+
               const dfInfo = await getDfInfo(mp);
-              const label = await getLabel(device || '', mp);
+              const label = await getLabel(device, mp);
               mountMap.set(mp, {
-                device: device || 'unknown',
+                device,
                 mountpoint: mp,
-                fstype: fstype || 'unknown',
+                fstype,
                 size: dfInfo.size,
                 used: dfInfo.used,
                 available: dfInfo.available,
                 usePercent: dfInfo.usePercent,
                 label,
               });
-            } catch { /* not a mountpoint */ }
+            } catch { /* not a mountpoint or stat failed */ }
           }
         }
       } catch { /* ignore */ }
+
+      this.logger.debug('FILES', `getMounts found ${mountMap.size} drives: ${Array.from(mountMap.keys()).join(', ')}`);
 
     } catch (error) {
       this.logger.error('FILES', `Failed to get mounts: ${error}`);
