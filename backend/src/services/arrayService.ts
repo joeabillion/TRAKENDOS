@@ -520,7 +520,7 @@ export class ArrayService {
   private getFilesystem(device: string): string | undefined {
     try {
       // Check first partition
-      const parts = execSync(`lsblk -n -o NAME "${device}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
+      const parts = execSync(`lsblk -ln -o NAME "${device}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
       if (parts) {
         const partDev = `/dev/${parts}`;
         return execSync(`blkid -s TYPE -o value "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim() || undefined;
@@ -684,7 +684,7 @@ export class ArrayService {
         // Find the mountable partition (first partition, or whole device if no partitions)
         let partDev = devicePath;
         try {
-          const firstPart = execSync(`lsblk -n -o NAME "${devicePath}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
+          const firstPart = execSync(`lsblk -ln -o NAME "${devicePath}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
           if (firstPart) partDev = `/dev/${firstPart}`;
         } catch { /* use whole device */ }
 
@@ -747,7 +747,7 @@ export class ArrayService {
 
         let partDev = drive.device;
         try {
-          const firstPart = execSync(`lsblk -n -o NAME "${drive.device}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
+          const firstPart = execSync(`lsblk -ln -o NAME "${drive.device}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
           if (firstPart) partDev = `/dev/${firstPart}`;
         } catch { /* use whole device */ }
 
