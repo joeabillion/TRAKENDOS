@@ -3,7 +3,8 @@ import {
   FolderOpen, File, HardDrive, ChevronRight, ChevronDown,
   ArrowUp, RefreshCw, Search, Plus, Trash2, Copy, Scissors,
   Edit3, Download, Eye, FolderPlus, FilePlus, MoreVertical,
-  Home, Grid, List, Filter, X, AlertCircle, Check, Lock
+  Home, Grid, List, Filter, X, AlertCircle, Check, Lock,
+  Database, Shield, Zap, Server
 } from 'lucide-react'
 import api from '../../utils/api'
 import clsx from 'clsx'
@@ -47,6 +48,14 @@ interface DiskMount {
   label: string
 }
 
+interface ArrayAssignment {
+  drive_id: string
+  device: string
+  role: 'data' | 'parity' | 'cache'
+  slot: number
+  status: string
+}
+
 // ── Helpers ──
 
 function formatSize(bytes: number): string {
@@ -87,6 +96,8 @@ export const FileBrowserPage: React.FC = () => {
   const [currentPath, setCurrentPath] = useState('/')
   const [listing, setListing] = useState<DirectoryListing | null>(null)
   const [mounts, setMounts] = useState<DiskMount[]>([])
+  const [arrayAssignments, setArrayAssignments] = useState<ArrayAssignment[]>([])
+  const [showDriveOverview, setShowDriveOverview] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
@@ -129,9 +140,76 @@ export const FileBrowserPage: React.FC = () => {
     } catch { /* ignore */ }
   }, [])
 
+  const loadArrayAssignments = useCallback(async () => {
+    try {
+      const res = await api.get('/array/drives/assigned')
+      setArrayAssignments(res.data || [])
+    } catch { /* ignore */ }
+  }, [])
+
+  // Get array label for a mount based on mountpoint
+  const getArrayLabel = (mount: DiskMount): { label: string; role: 'data' | 'parity' | 'cache' | 'unassigned'; slot?: number } => {
+    const mp = mount.mountpoint
+    // Match cache
+    if (mp === '/mnt/disks/cache') {
+      return { label: 'Cache', role: 'cache' }
+    }
+    // Match disk slots
+    const diskMatch = mp.match(/\/mnt\/disks\/disk(\d+)/)
+    if (diskMatch) {
+      const slot = parseInt(diskMatch[1])
+      // Check if this slot has an array assignment
+      const assignment = arrayAssignments.find(a => a.slot === slot && a.role === 'data')
+      if (assignment) {
+        return { label: `Disk ${slot}`, role: 'data', slot }
+      }
+      // Check parity
+      const parityAssignment = arrayAssignments.find(a => a.role === 'parity')
+      if (parityAssignment) {
+        const parityMp = `/mnt/disks/disk${parityAssignment.slot}`
+        if (parityMp === mp) {
+          return { label: 'Parity', role: 'parity', slot }
+        }
+      }
+      return { label: `Disk ${slot}`, role: 'unassigned', slot }
+    }
+    // Data partition
+    if (mp === '/data' || mp === '/') {
+      return { label: mount.label || 'System', role: 'unassigned' }
+    }
+    return { label: mount.label || mp.split('/').pop() || mp, role: 'unassigned' }
+  }
+
+  const getRoleIcon = (role: string) => {
+    switch (role) {
+      case 'parity': return <Shield size={24} className="text-yellow-400" />
+      case 'cache': return <Zap size={24} className="text-purple-400" />
+      case 'data': return <Database size={24} className="text-trakend-accent" />
+      default: return <HardDrive size={24} className="text-trakend-text-secondary" />
+    }
+  }
+
+  const getRoleColor = (role: string) => {
+    switch (role) {
+      case 'parity': return 'border-yellow-500/30 hover:border-yellow-500/60'
+      case 'cache': return 'border-purple-500/30 hover:border-purple-500/60'
+      case 'data': return 'border-trakend-accent/30 hover:border-trakend-accent/60'
+      default: return 'border-trakend-border hover:border-trakend-text-secondary/50'
+    }
+  }
+
+  const getRoleBadgeColor = (role: string) => {
+    switch (role) {
+      case 'parity': return 'bg-yellow-900/30 text-yellow-400 border-yellow-700/30'
+      case 'cache': return 'bg-purple-900/30 text-purple-400 border-purple-700/30'
+      case 'data': return 'bg-trakend-accent/10 text-trakend-accent border-trakend-accent/30'
+      default: return 'bg-trakend-surface text-trakend-text-secondary border-trakend-border'
+    }
+  }
+
   useEffect(() => {
-    loadDirectory(currentPath)
     loadMounts()
+    loadArrayAssignments()
   }, [])
 
   useEffect(() => {
@@ -141,7 +219,16 @@ export const FileBrowserPage: React.FC = () => {
   // ── Navigation ──
 
   const navigate = (path: string) => {
+    setShowDriveOverview(false)
     loadDirectory(path)
+  }
+
+  const goToDriveOverview = () => {
+    setShowDriveOverview(true)
+    setListing(null)
+    setError('')
+    loadMounts()
+    loadArrayAssignments()
   }
 
   const goUp = () => {
@@ -376,12 +463,12 @@ export const FileBrowserPage: React.FC = () => {
       {/* Toolbar */}
       <div className="bg-trakend-surface border-b border-trakend-border px-4 py-3 flex items-center gap-3 flex-shrink-0">
         {/* Navigation */}
-        <button onClick={goUp} disabled={!listing?.parent}
+        <button onClick={showDriveOverview ? undefined : goUp} disabled={showDriveOverview || !listing?.parent}
           className="p-2 rounded hover:bg-trakend-surface-light disabled:opacity-30 text-trakend-text-secondary">
           <ArrowUp size={18} />
         </button>
-        <button onClick={() => navigate('/')} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary">
-          <Home size={18} />
+        <button onClick={goToDriveOverview} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary" title="Drives Overview">
+          <HardDrive size={18} />
         </button>
         <button onClick={() => loadDirectory(currentPath)} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary">
           <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
@@ -389,8 +476,8 @@ export const FileBrowserPage: React.FC = () => {
 
         {/* Breadcrumb */}
         <div className="flex items-center gap-1 flex-1 overflow-x-auto text-sm">
-          <button onClick={() => navigate('/')} className="text-trakend-text-secondary hover:text-trakend-accent">/</button>
-          {breadcrumbs.map((seg, i) => {
+          <button onClick={goToDriveOverview} className="text-trakend-text-secondary hover:text-trakend-accent font-medium">Drives</button>
+          {!showDriveOverview && breadcrumbs.map((seg, i) => {
             const fullPath = '/' + breadcrumbs.slice(0, i + 1).join('/')
             return (
               <React.Fragment key={i}>
@@ -474,57 +561,156 @@ export const FileBrowserPage: React.FC = () => {
 
       {/* Main area */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Drive sidebar */}
-        <div className="w-56 bg-trakend-surface border-r border-trakend-border overflow-y-auto flex-shrink-0">
-          <div className="p-3 text-xs font-semibold text-trakend-text-secondary uppercase tracking-wider">Drives</div>
-          {mounts.map((m, i) => (
-            <button
-              key={i}
-              onClick={() => navigate(m.mountpoint)}
-              onDragOver={e => handleDragOver(e, m.mountpoint)}
-              onDragLeave={handleDragLeave}
-              onDrop={e => handleDrop(e, m.mountpoint)}
-              className={clsx(
-                'w-full text-left px-3 py-2.5 hover:bg-trakend-surface-light border-b border-trakend-border/50',
-                currentPath.startsWith(m.mountpoint) && 'bg-trakend-surface-light',
-                dropTarget === m.mountpoint && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
-              )}
-            >
-              <div className="flex items-center gap-2">
-                <HardDrive size={16} className="text-trakend-accent flex-shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm text-trakend-text-primary truncate">{m.label}</div>
-                  <div className="text-xs text-trakend-text-secondary truncate">{m.mountpoint}</div>
-                  <div className="mt-1 h-1.5 bg-trakend-dark rounded-full overflow-hidden">
-                    <div
-                      className={clsx('h-full rounded-full', m.usePercent > 90 ? 'bg-trakend-error' : m.usePercent > 70 ? 'bg-trakend-warning' : 'bg-trakend-accent')}
-                      style={{ width: `${m.usePercent}%` }}
-                    />
+        {/* Drive sidebar — hidden during drive overview */}
+        {!showDriveOverview && (
+          <div className="w-56 bg-trakend-surface border-r border-trakend-border overflow-y-auto flex-shrink-0">
+            <div className="p-3 text-xs font-semibold text-trakend-text-secondary uppercase tracking-wider cursor-pointer hover:text-trakend-accent" onClick={goToDriveOverview}>← All Drives</div>
+            {mounts.map((m, i) => {
+              const info = getArrayLabel(m)
+              return (
+                <button
+                  key={i}
+                  onClick={() => navigate(m.mountpoint)}
+                  onDragOver={e => handleDragOver(e, m.mountpoint)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={e => handleDrop(e, m.mountpoint)}
+                  className={clsx(
+                    'w-full text-left px-3 py-2.5 hover:bg-trakend-surface-light border-b border-trakend-border/50',
+                    currentPath.startsWith(m.mountpoint) && 'bg-trakend-surface-light',
+                    dropTarget === m.mountpoint && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <HardDrive size={16} className="text-trakend-accent flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm text-trakend-text-primary truncate">{info.label}</div>
+                      <div className="text-xs text-trakend-text-secondary truncate">{m.mountpoint}</div>
+                      <div className="mt-1 h-1.5 bg-trakend-dark rounded-full overflow-hidden">
+                        <div
+                          className={clsx('h-full rounded-full', m.usePercent > 90 ? 'bg-trakend-error' : m.usePercent > 70 ? 'bg-trakend-warning' : 'bg-trakend-accent')}
+                          style={{ width: `${m.usePercent}%` }}
+                        />
+                      </div>
+                      <div className="text-xs text-trakend-text-secondary mt-0.5">
+                        {formatSize(m.used)} / {formatSize(m.size)}
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-xs text-trakend-text-secondary mt-0.5">
-                    {formatSize(m.used)} / {formatSize(m.size)}
-                  </div>
-                </div>
-              </div>
-            </button>
-          ))}
-          {/* Quick links */}
-          <div className="p-3 text-xs font-semibold text-trakend-text-secondary uppercase tracking-wider mt-2">Quick Access</div>
-          {['/', '/data', '/data/shares', '/data/docker', '/data/backups', '/mnt/disks', '/tmp'].map(p => (
-            <button key={p} onClick={() => navigate(p)}
-              onDragOver={e => handleDragOver(e, p)}
-              onDragLeave={handleDragLeave}
-              onDrop={e => handleDrop(e, p)}
-              className={clsx(
-                'w-full text-left px-3 py-2 text-sm text-trakend-text-secondary hover:bg-trakend-surface-light hover:text-trakend-text-primary',
-                dropTarget === p && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
-              )}>
-              {p}
-            </button>
-          ))}
-        </div>
+                </button>
+              )
+            })}
+            {/* Quick links */}
+            <div className="p-3 text-xs font-semibold text-trakend-text-secondary uppercase tracking-wider mt-2">Quick Access</div>
+            {['/', '/data', '/data/shares', '/data/backups', '/mnt/disks', '/tmp'].map(p => (
+              <button key={p} onClick={() => navigate(p)}
+                onDragOver={e => handleDragOver(e, p)}
+                onDragLeave={handleDragLeave}
+                onDrop={e => handleDrop(e, p)}
+                className={clsx(
+                  'w-full text-left px-3 py-2 text-sm text-trakend-text-secondary hover:bg-trakend-surface-light hover:text-trakend-text-primary',
+                  dropTarget === p && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
+                )}>
+                {p}
+              </button>
+            ))}
+          </div>
+        )}
 
-        {/* File list */}
+        {/* Drive Overview Landing Page */}
+        {showDriveOverview ? (
+          <div className="flex-1 overflow-auto p-6">
+            <div className="mb-6">
+              <h2 className="text-xl font-bold text-trakend-text-primary">Drives</h2>
+              <p className="text-sm text-trakend-text-secondary mt-1">Click a drive to browse its files. Drag and drop files between drives.</p>
+            </div>
+
+            {/* Drive cards grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {mounts.map((m, i) => {
+                const info = getArrayLabel(m)
+                return (
+                  <button
+                    key={i}
+                    onClick={() => navigate(m.mountpoint)}
+                    onDragOver={e => handleDragOver(e, m.mountpoint)}
+                    onDragLeave={handleDragLeave}
+                    onDrop={e => handleDrop(e, m.mountpoint)}
+                    className={clsx(
+                      'text-left bg-trakend-surface rounded-xl border-2 p-5 transition-all duration-200 hover:shadow-lg hover:shadow-black/20 group',
+                      getRoleColor(info.role),
+                      dropTarget === m.mountpoint && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
+                    )}
+                  >
+                    {/* Header */}
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="p-2.5 rounded-lg bg-trakend-dark">
+                        {getRoleIcon(info.role)}
+                      </div>
+                      <span className={clsx('text-xs font-medium px-2 py-1 rounded-full border', getRoleBadgeColor(info.role))}>
+                        {info.role === 'data' ? 'Data' : info.role === 'parity' ? 'Parity' : info.role === 'cache' ? 'Cache' : 'Unassigned'}
+                      </span>
+                    </div>
+
+                    {/* Name */}
+                    <h3 className="text-lg font-bold text-trakend-text-primary group-hover:text-trakend-accent transition-colors">
+                      {info.label}
+                    </h3>
+                    <div className="text-xs text-trakend-text-secondary mt-0.5 font-mono truncate">
+                      {m.device} → {m.mountpoint}
+                    </div>
+
+                    {/* Usage bar */}
+                    <div className="mt-4">
+                      <div className="flex justify-between text-xs text-trakend-text-secondary mb-1.5">
+                        <span>{formatSize(m.used)} used</span>
+                        <span>{formatSize(m.available)} free</span>
+                      </div>
+                      <div className="h-2.5 bg-trakend-dark rounded-full overflow-hidden">
+                        <div
+                          className={clsx(
+                            'h-full rounded-full transition-all duration-500',
+                            m.usePercent > 90 ? 'bg-trakend-error' : m.usePercent > 70 ? 'bg-trakend-warning' : 'bg-trakend-accent'
+                          )}
+                          style={{ width: `${m.usePercent}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs mt-1.5">
+                        <span className="text-trakend-text-secondary">{m.fstype.toUpperCase()}</span>
+                        <span className={clsx(
+                          'font-semibold',
+                          m.usePercent > 90 ? 'text-trakend-error' : m.usePercent > 70 ? 'text-trakend-warning' : 'text-trakend-accent'
+                        )}>
+                          {m.usePercent}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Total size */}
+                    <div className="mt-3 pt-3 border-t border-trakend-border/50">
+                      <div className="text-xs text-trakend-text-secondary">
+                        Total: <span className="text-trakend-text-primary font-medium">{formatSize(m.size)}</span>
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Quick access section */}
+            <div className="mt-8">
+              <h3 className="text-sm font-semibold text-trakend-text-secondary uppercase tracking-wider mb-3">Quick Access</h3>
+              <div className="flex flex-wrap gap-2">
+                {['/', '/data', '/data/shares', '/data/backups', '/mnt/disks', '/tmp'].map(p => (
+                  <button key={p} onClick={() => navigate(p)}
+                    className="px-4 py-2 rounded-lg bg-trakend-surface border border-trakend-border text-sm text-trakend-text-secondary hover:text-trakend-text-primary hover:border-trakend-accent/50 transition-colors">
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+        /* File list */
         <div className="flex-1 overflow-auto">
           {error && (
             <div className="m-4 p-3 rounded-lg bg-red-900/20 border border-trakend-error/30 text-trakend-error text-sm flex items-center gap-2">
@@ -703,6 +889,7 @@ export const FileBrowserPage: React.FC = () => {
             </>
           )}
         </div>
+        )}
       </div>
 
       {/* Context Menu */}
