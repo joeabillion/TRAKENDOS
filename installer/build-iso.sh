@@ -833,7 +833,9 @@ if [ -d "$OFFLINE_DIR/docker-debs" ] && ls "$OFFLINE_DIR/docker-debs/"*.deb > /d
     dpkg --force-depends --force-confnew --no-triggers -i /tmp/docker-debs/*.deb 2>/dev/null || true
     apt-get -f install -y --no-download -o Dpkg::Options::="--force-confnew" -o Dpkg::Options::="--no-triggers" 2>/dev/null || true
     usermod -aG docker trakend 2>/dev/null || true
-    systemctl enable docker 2>/dev/null || true
+    # Docker is NOT enabled at boot — it starts when the array starts
+    systemctl disable docker 2>/dev/null || true
+    systemctl disable docker.socket 2>/dev/null || true
     rm -rf /tmp/docker-debs
   ' 2>&1 | tail -5
 
@@ -853,7 +855,9 @@ else
       docker-ce docker-ce-cli containerd.io docker-buildx-plugin \
       docker-compose-plugin nodejs > /dev/null 2>&1
     usermod -aG docker trakend 2>/dev/null || true
-    systemctl enable docker 2>/dev/null || true
+    # Docker is NOT enabled at boot — it starts when the array starts
+    systemctl disable docker 2>/dev/null || true
+    systemctl disable docker.socket 2>/dev/null || true
   ' 2>&1 | while IFS= read -r line; do echo -n "."; done
   echo ""
 fi
@@ -973,8 +977,8 @@ ENVEOF
 cat > "$INST/etc/systemd/system/trakend-os.service" << SVCEOF
 [Unit]
 Description=Trakend OS Server Management Platform
-After=network-online.target docker.service
-Wants=docker.service network-online.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple

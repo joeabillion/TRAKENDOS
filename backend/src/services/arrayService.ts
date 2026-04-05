@@ -633,6 +633,9 @@ export class ArrayService {
   async startArray(): Promise<void> {
     if (this.arrayConfig.state === 'running') throw new Error('Array is already running.');
 
+    // Always scan drives first so this.drives map is populated
+    await this.scanDrives();
+
     const assignments = this.getAssignedDrives();
     const dataDrives = assignments.filter(d => d.role === 'data');
     const parityDrives = assignments.filter(d => d.role === 'parity' || d.role === 'parity2');
@@ -645,7 +648,7 @@ export class ArrayService {
 
     this.arrayConfig.state = 'starting';
     this.saveArrayConfig();
-    this.logger.info('ARRAY', 'Starting array...');
+    this.logger.info('ARRAY', `Starting array with ${dataDrives.length} data + ${parityDrives.length} parity drive(s)...`);
 
     try {
       // Prepare new drives — only format if they don't already have a filesystem
@@ -667,10 +670,28 @@ export class ArrayService {
       // Mount all data drives
       for (const assignment of dataDrives) {
         const drive = this.drives.get(assignment.drive_id);
-        if (!drive) continue;
+        if (!drive) {
+          this.logger.error('ARRAY', `Drive ${assignment.drive_id} (slot ${assignment.slot}) not found in drives map — skipping`);
+          continue;
+        }
 
         const mountPoint = `/mnt/disks/disk${assignment.slot}`;
         fs.mkdirSync(mountPoint, { recursive: true });
+
+        // Check if already mounted at the right place
+        try {
+          const currentMount = execSync(`findmnt -n -o TARGET "${drive.device}" 2>/dev/null || findmnt -n -o TARGET "${drive.device}1" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+          if (currentMount === mountPoint) {
+            drive.mount_point = mountPoint;
+            this.logger.info('ARRAY', `${drive.device} already mounted at ${mountPoint}`);
+            continue;
+          }
+          // If mounted elsewhere, unmount first
+          if (currentMount) {
+            this.logger.info('ARRAY', `${drive.device} mounted at ${currentMount}, remounting to ${mountPoint}`);
+            try { execSync(`umount "${currentMount}" 2>/dev/null`, { timeout: 10000 }); } catch { /* ignore */ }
+          }
+        } catch { /* not mounted anywhere */ }
 
         // Get first partition
         let partDev = drive.device;
@@ -679,12 +700,58 @@ export class ArrayService {
           if (firstPart) partDev = `/dev/${firstPart}`;
         } catch { /* use whole device */ }
 
+        // Get filesystem type for explicit mount
+        let fsType = drive.filesystem || '';
+        if (!fsType) {
+          try {
+            fsType = execSync(`blkid -s TYPE -o value "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+          } catch { /* unknown */ }
+        }
+
+        // Mount with explicit fs type if known
         try {
-          execSync(`mount "${partDev}" "${mountPoint}" 2>/dev/null`, { timeout: 10000 });
+          const mountCmd = fsType
+            ? `mount -t ${fsType} "${partDev}" "${mountPoint}"`
+            : `mount "${partDev}" "${mountPoint}"`;
+          execSync(mountCmd, { timeout: 10000 });
           drive.mount_point = mountPoint;
-          this.logger.info('ARRAY', `Mounted ${drive.device} at ${mountPoint}`);
+          this.logger.info('ARRAY', `Mounted ${partDev} (${fsType || 'auto'}) at ${mountPoint}`);
         } catch (err) {
-          this.logger.error('ARRAY', `Failed to mount ${drive.device}: ${err}`);
+          this.logger.error('ARRAY', `Failed to mount ${partDev} at ${mountPoint}: ${err}`);
+        }
+      }
+
+      // Mount cache drive if assigned
+      const cacheDrives = assignments.filter(d => d.role === 'cache');
+      for (const assignment of cacheDrives) {
+        const drive = this.drives.get(assignment.drive_id);
+        if (!drive) continue;
+
+        const mountPoint = '/mnt/disks/cache';
+        fs.mkdirSync(mountPoint, { recursive: true });
+
+        // Check if already mounted
+        try {
+          const currentMount = execSync(`findmnt -n -o TARGET "${drive.device}" 2>/dev/null || findmnt -n -o TARGET "${drive.device}1" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+          if (currentMount) {
+            drive.mount_point = currentMount;
+            this.logger.info('ARRAY', `Cache ${drive.device} already mounted at ${currentMount}`);
+            continue;
+          }
+        } catch { /* not mounted */ }
+
+        let partDev = drive.device;
+        try {
+          const firstPart = execSync(`lsblk -n -o NAME "${drive.device}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
+          if (firstPart) partDev = `/dev/${firstPart}`;
+        } catch { /* use whole device */ }
+
+        try {
+          execSync(`mount "${partDev}" "${mountPoint}"`, { timeout: 10000 });
+          drive.mount_point = mountPoint;
+          this.logger.info('ARRAY', `Mounted cache ${partDev} at ${mountPoint}`);
+        } catch (err) {
+          this.logger.error('ARRAY', `Failed to mount cache ${partDev}: ${err}`);
         }
       }
 
@@ -715,6 +782,20 @@ export class ArrayService {
         this.logger.info('ARRAY', `Array started. ${dataDrives.length} data drive(s), ${parityDrives.length} parity drive(s).`);
       }
 
+      // Start Docker now that storage is mounted
+      try {
+        execSync('systemctl is-active docker >/dev/null 2>&1', { timeout: 5000 });
+        this.logger.info('ARRAY', 'Docker is already running');
+      } catch {
+        try {
+          this.logger.info('ARRAY', 'Starting Docker daemon...');
+          execSync('systemctl start docker', { timeout: 30000 });
+          this.logger.info('ARRAY', 'Docker started successfully');
+        } catch (err) {
+          this.logger.error('ARRAY', `Failed to start Docker: ${err}`);
+        }
+      }
+
       // Set up spin-down timers
       if (this.arrayConfig.spin_down_delay > 0) {
         this.setupSpinDown();
@@ -742,6 +823,20 @@ export class ArrayService {
       clearTimeout(timer);
     }
     this.spinDownTimers.clear();
+
+    // Stop Docker before unmounting drives
+    try {
+      execSync('systemctl is-active docker >/dev/null 2>&1', { timeout: 5000 });
+      this.logger.info('ARRAY', 'Stopping all Docker containers...');
+      try {
+        execSync('docker stop $(docker ps -q) 2>/dev/null || true', { timeout: 60000 });
+      } catch { /* no running containers */ }
+      this.logger.info('ARRAY', 'Stopping Docker daemon...');
+      execSync('systemctl stop docker docker.socket 2>/dev/null || true', { timeout: 30000 });
+      this.logger.info('ARRAY', 'Docker stopped');
+    } catch {
+      this.logger.info('ARRAY', 'Docker was not running');
+    }
 
     // Unmount all data drives
     const assignments = this.getAssignedDrives();
