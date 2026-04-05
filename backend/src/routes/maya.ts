@@ -102,22 +102,70 @@ export function createMayaRouter(maya: MayaService): Router {
 
   router.post('/chat', async (req: AuthRequest, res: Response) => {
     try {
-      const { message } = req.body;
+      const { message, conversationId } = req.body;
       if (!message) {
         res.status(400).json({ error: 'message required' });
         return;
       }
 
-      const response = await maya.chat(message);
+      const response = await maya.chat(message, conversationId);
       res.json(response);
     } catch (error) {
       res.status(500).json({ error: String(error) });
     }
   });
 
-  router.post('/chat/clear', (req: AuthRequest, res: Response) => {
+  // Conversation management
+  router.get('/conversations', (req: AuthRequest, res: Response) => {
     try {
-      maya.clearConversation();
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
+      const conversations = maya.listConversations(limit);
+      res.json(conversations);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  router.post('/conversations', (req: AuthRequest, res: Response) => {
+    try {
+      const { title } = req.body;
+      const conversation = maya.createConversation(title);
+      res.json(conversation);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  router.get('/conversations/:id', (req: AuthRequest, res: Response) => {
+    try {
+      const conversation = maya.getConversation(req.params.id);
+      if (!conversation) {
+        res.status(404).json({ error: 'Conversation not found' });
+        return;
+      }
+      res.json(conversation);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  router.delete('/conversations/:id', (req: AuthRequest, res: Response) => {
+    try {
+      maya.deleteConversation(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  router.put('/conversations/:id', (req: AuthRequest, res: Response) => {
+    try {
+      const { title } = req.body;
+      if (!title) {
+        res.status(400).json({ error: 'title required' });
+        return;
+      }
+      maya.renameConversation(req.params.id, title);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: String(error) });

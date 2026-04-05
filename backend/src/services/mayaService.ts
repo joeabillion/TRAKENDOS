@@ -71,7 +71,6 @@ export class MayaService {
   private dockerService?: DockerService;
   private settingsModel?: SettingsModel;
   private actionQueue: MayaAction[] = [];
-  private conversationHistory: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
   private systemPromptCache: string = '';
 
   constructor(db: Database.Database, logger: EventLogger) {
@@ -174,6 +173,23 @@ Behavior guidelines:
       );
       CREATE INDEX IF NOT EXISTS idx_notifications_created ON maya_notifications(created_at);
       CREATE INDEX IF NOT EXISTS idx_actions_created ON maya_actions(created_at);
+
+      CREATE TABLE IF NOT EXISTS maya_conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS maya_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (conversation_id) REFERENCES maya_conversations(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_conv ON maya_messages(conversation_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_conversations_updated ON maya_conversations(updated_at);
     `);
   }
 
@@ -491,13 +507,29 @@ Behavior guidelines:
     }
   }
 
-  async chat(message: string): Promise<{
+  async chat(message: string, conversationId?: string): Promise<{
     response: string;
+    conversationId: string;
     relevantDos: string[];
     relevantDonts: string[];
     relevantPatterns: string[];
     suggestedActions: string[];
   }> {
+    // Auto-create conversation if none provided
+    if (!conversationId) {
+      const conv = this.createConversation(message.slice(0, 60));
+      conversationId = conv.id;
+    }
+
+    // Save user message to DB
+    this.addMessage(conversationId, 'user', message);
+
+    // Auto-title: if conversation title is 'New Conversation', update it from the first message
+    const conv = this.db.prepare('SELECT title FROM maya_conversations WHERE id = ?').get(conversationId) as any;
+    if (conv && conv.title === 'New Conversation') {
+      this.renameConversation(conversationId, message.slice(0, 60));
+    }
+
     // Gather real-time system context to inject into the conversation
     let systemContext = '';
     try {
@@ -515,7 +547,6 @@ Behavior guidelines:
         const running = containers.filter((c: any) => c.state === 'running').length;
         const total = containers.length;
         systemContext += `\nDocker: ${running}/${total} containers running`;
-        // List stopped containers if any
         const stopped = containers.filter((c: any) => c.state !== 'running');
         if (stopped.length > 0) {
           systemContext += ` (stopped: ${stopped.map((c: any) => c.names?.[0]?.replace('/', '') || c.id?.slice(0, 12)).join(', ')})`;
@@ -530,10 +561,9 @@ Behavior guidelines:
       { role: 'system', content: this.systemPromptCache + systemContext },
     ];
 
-    // Include recent conversation history (last 10 exchanges)
-    const recentHistory = this.conversationHistory.slice(-20);
-    messages.push(...recentHistory);
-    messages.push({ role: 'user', content: message });
+    // Load recent conversation history from DB
+    const recentHistory = this.getConversationMessages(conversationId, 20);
+    messages.push(...(recentHistory as any[]));
 
     // Try calling Ollama API
     const ollamaUrl = this.getOllamaUrl();
@@ -572,21 +602,14 @@ Behavior guidelines:
       const data = await res.json();
       response = data.message?.content || data.response || '';
 
-      // Save to conversation history
-      this.conversationHistory.push({ role: 'user', content: message });
-      this.conversationHistory.push({ role: 'assistant', content: response });
-
-      // Trim history to last 30 messages
-      if (this.conversationHistory.length > 30) {
-        this.conversationHistory = this.conversationHistory.slice(-30);
-      }
-
       this.logger.debug('MAYA', `Chat response (${response.length} chars)`);
     } catch (err: any) {
       this.logger.warn('MAYA', `Ollama chat failed: ${err.message}`);
-      // Fallback to knowledge-base response
       response = this.getFallbackResponse(message);
     }
+
+    // Save assistant response to DB
+    this.addMessage(conversationId, 'assistant', response);
 
     // Extract suggested actions from the response context
     const lowerMessage = message.toLowerCase();
@@ -596,7 +619,7 @@ Behavior guidelines:
     else if (lowerMessage.includes('disk') || lowerMessage.includes('storage')) suggestedActions = ['investigate disk:', 'find duplicates'];
     else if (lowerMessage.includes('repair') || lowerMessage.includes('fix')) suggestedActions = ['scan', 'optimize'];
 
-    return { response, relevantDos: [], relevantDonts: [], relevantPatterns: [], suggestedActions };
+    return { response, conversationId, relevantDos: [], relevantDonts: [], relevantPatterns: [], suggestedActions };
   }
 
   private getFallbackResponse(message: string): string {
@@ -607,8 +630,59 @@ Behavior guidelines:
     return "I'm having trouble connecting to my AI model right now. Please check that the Ollama container (ollama-maya) is running. You can still use my scan, investigate, and optimize features from the sidebar controls.";
   }
 
+  // ---- Conversation persistence ----
+
+  listConversations(limit = 50): Array<{ id: string; title: string; created_at: number; updated_at: number; messageCount: number }> {
+    const rows = this.db.prepare(`
+      SELECT c.*, COUNT(m.id) as messageCount
+      FROM maya_conversations c
+      LEFT JOIN maya_messages m ON m.conversation_id = c.id
+      GROUP BY c.id
+      ORDER BY c.updated_at DESC
+      LIMIT ?
+    `).all(limit) as any[];
+    return rows;
+  }
+
+  createConversation(title?: string): { id: string; title: string; created_at: number; updated_at: number } {
+    const id = uuidv4();
+    const now = Date.now();
+    const t = title || 'New Conversation';
+    this.db.prepare('INSERT INTO maya_conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)').run(id, t, now, now);
+    return { id, title: t, created_at: now, updated_at: now };
+  }
+
+  getConversation(conversationId: string): { id: string; title: string; created_at: number; updated_at: number; messages: Array<{ id: string; role: string; content: string; created_at: number }> } | null {
+    const conv = this.db.prepare('SELECT * FROM maya_conversations WHERE id = ?').get(conversationId) as any;
+    if (!conv) return null;
+    const messages = this.db.prepare('SELECT * FROM maya_messages WHERE conversation_id = ? ORDER BY created_at ASC').all(conversationId) as any[];
+    return { ...conv, messages };
+  }
+
+  deleteConversation(conversationId: string): void {
+    this.db.prepare('DELETE FROM maya_messages WHERE conversation_id = ?').run(conversationId);
+    this.db.prepare('DELETE FROM maya_conversations WHERE id = ?').run(conversationId);
+  }
+
+  renameConversation(conversationId: string, title: string): void {
+    this.db.prepare('UPDATE maya_conversations SET title = ?, updated_at = ? WHERE id = ?').run(title, Date.now(), conversationId);
+  }
+
+  private addMessage(conversationId: string, role: string, content: string): string {
+    const id = uuidv4();
+    const now = Date.now();
+    this.db.prepare('INSERT INTO maya_messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)').run(id, conversationId, role, content, now);
+    this.db.prepare('UPDATE maya_conversations SET updated_at = ? WHERE id = ?').run(now, conversationId);
+    return id;
+  }
+
+  private getConversationMessages(conversationId: string, limit = 20): Array<{ role: string; content: string }> {
+    const rows = this.db.prepare('SELECT role, content FROM maya_messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?').all(conversationId, limit) as any[];
+    return rows.reverse();
+  }
+
   clearConversation(): void {
-    this.conversationHistory = [];
+    // Legacy: clears nothing now since conversations are in DB
   }
 
   createNotification(

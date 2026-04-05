@@ -18,6 +18,21 @@ export interface MayaStatus {
   lastCheckTime: string
 }
 
+export interface MayaConversation {
+  id: string
+  title: string
+  created_at: number
+  updated_at: number
+  messageCount: number
+}
+
+export interface MayaMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  created_at: number
+}
+
 export const useMaya = () => {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -110,13 +125,46 @@ export const useMaya = () => {
     }
   }, [])
 
-  const chat = useCallback(async (message: string): Promise<string> => {
+  const chat = useCallback(async (message: string, conversationId?: string): Promise<{ response: string; conversationId: string }> => {
     try {
-      const response = await api.post('/maya/chat', { message }, { timeout: 120000 })
-      return response.data.response || ''
+      const response = await api.post('/maya/chat', { message, conversationId }, { timeout: 120000 })
+      return {
+        response: response.data.response || '',
+        conversationId: response.data.conversationId || '',
+      }
     } catch (err) {
       console.error('Failed to send message to Maya:', err)
-      return 'Sorry, I encountered an error processing your request. The AI model may be loading — please try again in a moment.'
+      return {
+        response: 'Sorry, I encountered an error processing your request. The AI model may be loading — please try again in a moment.',
+        conversationId: conversationId || '',
+      }
+    }
+  }, [])
+
+  const listConversations = useCallback(async (): Promise<MayaConversation[]> => {
+    try {
+      const response = await api.get('/maya/conversations')
+      return response.data
+    } catch {
+      return []
+    }
+  }, [])
+
+  const getConversation = useCallback(async (id: string): Promise<{ id: string; title: string; messages: MayaMessage[] } | null> => {
+    try {
+      const response = await api.get(`/maya/conversations/${id}`)
+      return response.data
+    } catch {
+      return null
+    }
+  }, [])
+
+  const deleteConversation = useCallback(async (id: string): Promise<boolean> => {
+    try {
+      await api.delete(`/maya/conversations/${id}`)
+      return true
+    } catch {
+      return false
     }
   }, [])
 
@@ -129,5 +177,8 @@ export const useMaya = () => {
     optimize,
     findDuplicates,
     chat,
+    listConversations,
+    getConversation,
+    deleteConversation,
   }
 }
