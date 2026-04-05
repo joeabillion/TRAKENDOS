@@ -760,6 +760,59 @@ export class ArrayService {
         }
       }
 
+      // Mount unassigned drives that have a filesystem (so ALL drives are always browsable)
+      const assignedDevices = new Set(assignments.map(a => a.device));
+      let unassignedSlot = 50; // Start unassigned drives at slot 50+ to avoid conflicts
+      for (const [, drive] of this.drives) {
+        if (assignedDevices.has(drive.device)) continue; // Skip assigned drives
+        if (drive.mount_point) continue; // Already mounted
+        if (drive.device.includes('nvme') && drive.device.includes('p')) continue; // Skip partitions listed as drives
+
+        // Find a mountable partition
+        let partDev = drive.device;
+        try {
+          const firstPart = execSync(`lsblk -ln -o NAME "${drive.device}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
+          if (firstPart) partDev = `/dev/${firstPart}`;
+        } catch { /* use whole device */ }
+
+        // Check if it has a filesystem
+        let fsType = '';
+        try {
+          fsType = execSync(`blkid -s TYPE -o value "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+        } catch { /* no filesystem */ }
+        if (!fsType) {
+          // Try the whole device if partition check failed
+          try {
+            fsType = execSync(`blkid -s TYPE -o value "${drive.device}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+            if (fsType) partDev = drive.device;
+          } catch { /* no filesystem */ }
+        }
+        if (!fsType) continue; // No filesystem, skip (e.g. parity drive)
+
+        // Check if already mounted somewhere
+        try {
+          const currentMount = execSync(`findmnt -n -o TARGET "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+          if (currentMount) {
+            drive.mount_point = currentMount;
+            this.logger.info('ARRAY', `Unassigned drive ${partDev} already mounted at ${currentMount}`);
+            continue;
+          }
+        } catch { /* not mounted */ }
+
+        // Mount to /mnt/disks/diskN with a high slot number
+        const mountPoint = `/mnt/disks/disk${unassignedSlot}`;
+        fs.mkdirSync(mountPoint, { recursive: true });
+        try {
+          const mountCmd = `mount -t ${fsType} "${partDev}" "${mountPoint}"`;
+          execSync(mountCmd, { timeout: 10000 });
+          drive.mount_point = mountPoint;
+          this.logger.info('ARRAY', `Mounted unassigned drive ${partDev} (${fsType}) at ${mountPoint}`);
+        } catch (err) {
+          this.logger.warn('ARRAY', `Failed to mount unassigned drive ${partDev}: ${err}`);
+        }
+        unassignedSlot++;
+      }
+
       // Check if parity is valid
       if (parityDrives.length > 0) {
         // Check for new parity drives that need initial sync

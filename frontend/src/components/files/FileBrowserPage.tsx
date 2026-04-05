@@ -48,12 +48,26 @@ interface DiskMount {
   label: string
 }
 
-interface ArrayAssignment {
-  drive_id: string
+interface PhysicalDrive {
+  id: string
   device: string
-  role: 'data' | 'parity' | 'cache'
-  slot: number
-  status: string
+  model: string
+  serial: string
+  size_bytes: number
+  size_human: string
+  transport: string
+  rpm: number
+  temperature: number
+  health: 'healthy' | 'warning' | 'failing' | 'failed' | 'unknown'
+  smart_passed: boolean
+  role: 'data' | 'parity' | 'parity2' | 'cache' | 'hot_spare' | 'unassigned'
+  slot?: number
+  filesystem?: string
+  mount_point?: string
+  usage_bytes?: number
+  spin_state: string
+  power_on_hours: number
+  reallocated_sectors: number
 }
 
 // ── Helpers ──
@@ -96,7 +110,7 @@ export const FileBrowserPage: React.FC = () => {
   const [currentPath, setCurrentPath] = useState('/')
   const [listing, setListing] = useState<DirectoryListing | null>(null)
   const [mounts, setMounts] = useState<DiskMount[]>([])
-  const [arrayAssignments, setArrayAssignments] = useState<ArrayAssignment[]>([])
+  const [allDrives, setAllDrives] = useState<PhysicalDrive[]>([])
   const [showDriveOverview, setShowDriveOverview] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -140,43 +154,39 @@ export const FileBrowserPage: React.FC = () => {
     } catch { /* ignore */ }
   }, [])
 
-  const loadArrayAssignments = useCallback(async () => {
+  const loadDrives = useCallback(async () => {
     try {
-      const res = await api.get('/array/drives/assigned')
-      setArrayAssignments(res.data || [])
+      const res = await api.get('/array/drives')
+      setAllDrives(res.data || [])
     } catch { /* ignore */ }
   }, [])
 
-  // Get array label for a mount based on mountpoint
-  const getArrayLabel = (mount: DiskMount): { label: string; role: 'data' | 'parity' | 'cache' | 'unassigned'; slot?: number } => {
+  // Get display label for a drive (matches array page labeling)
+  const getDriveLabel = (drive: PhysicalDrive): string => {
+    if (drive.role === 'parity' || drive.role === 'parity2') return drive.role === 'parity2' ? 'Parity 2' : 'Parity'
+    if (drive.role === 'cache') return 'Cache'
+    if (drive.role === 'data' && drive.slot) return `Disk ${drive.slot}`
+    if (drive.mount_point === '/data') return 'Data'
+    if (drive.mount_point) {
+      const name = drive.mount_point.split('/').pop() || drive.device
+      return name.charAt(0).toUpperCase() + name.slice(1)
+    }
+    return drive.model || drive.device
+  }
+
+  // Get array label for a mount based on mountpoint (for sidebar)
+  const getArrayLabel = (mount: DiskMount): { label: string; role: string } => {
+    // Try to find matching physical drive
+    const matchedDrive = allDrives.find(d => d.mount_point === mount.mountpoint || d.device === mount.device)
+    if (matchedDrive) {
+      return { label: getDriveLabel(matchedDrive), role: matchedDrive.role }
+    }
     const mp = mount.mountpoint
-    // Match cache
-    if (mp === '/mnt/disks/cache') {
-      return { label: 'Cache', role: 'cache' }
-    }
-    // Match disk slots
+    if (mp === '/mnt/disks/cache') return { label: 'Cache', role: 'cache' }
     const diskMatch = mp.match(/\/mnt\/disks\/disk(\d+)/)
-    if (diskMatch) {
-      const slot = parseInt(diskMatch[1])
-      // Check if this slot has an array assignment
-      const assignment = arrayAssignments.find(a => a.slot === slot && a.role === 'data')
-      if (assignment) {
-        return { label: `Disk ${slot}`, role: 'data', slot }
-      }
-      // Check parity
-      const parityAssignment = arrayAssignments.find(a => a.role === 'parity')
-      if (parityAssignment) {
-        const parityMp = `/mnt/disks/disk${parityAssignment.slot}`
-        if (parityMp === mp) {
-          return { label: 'Parity', role: 'parity', slot }
-        }
-      }
-      return { label: `Disk ${slot}`, role: 'unassigned', slot }
-    }
-    // Data partition
-    if (mp === '/data' || mp === '/') {
-      return { label: mount.label || 'System', role: 'unassigned' }
-    }
+    if (diskMatch) return { label: `Disk ${diskMatch[1]}`, role: 'data' }
+    if (mp === '/data') return { label: 'Data', role: 'unassigned' }
+    if (mp === '/') return { label: 'System', role: 'unassigned' }
     return { label: mount.label || mp.split('/').pop() || mp, role: 'unassigned' }
   }
 
@@ -209,7 +219,7 @@ export const FileBrowserPage: React.FC = () => {
 
   useEffect(() => {
     loadMounts()
-    loadArrayAssignments()
+    loadDrives()
   }, [])
 
   useEffect(() => {
@@ -228,7 +238,7 @@ export const FileBrowserPage: React.FC = () => {
     setListing(null)
     setError('')
     loadMounts()
-    loadArrayAssignments()
+    loadDrives()
   }
 
   const goUp = () => {
@@ -565,7 +575,7 @@ export const FileBrowserPage: React.FC = () => {
         {!showDriveOverview && (
           <div className="w-56 bg-trakend-surface border-r border-trakend-border overflow-y-auto flex-shrink-0">
             <div className="p-3 text-xs font-semibold text-trakend-text-secondary uppercase tracking-wider cursor-pointer hover:text-trakend-accent" onClick={goToDriveOverview}>← All Drives</div>
-            {mounts.map((m, i) => {
+            {mounts.filter(m => m.mountpoint !== '/' && m.mountpoint !== '/boot' && m.mountpoint !== '/boot/efi').map((m, i) => {
               const info = getArrayLabel(m)
               return (
                 <button
@@ -620,87 +630,135 @@ export const FileBrowserPage: React.FC = () => {
         {showDriveOverview ? (
           <div className="flex-1 overflow-auto p-6">
             <div className="mb-6">
-              <h2 className="text-xl font-bold text-trakend-text-primary">Drives</h2>
-              <p className="text-sm text-trakend-text-secondary mt-1">Click a drive to browse its files. Drag and drop files between drives.</p>
+              <h2 className="text-xl font-bold text-trakend-text-primary flex items-center gap-3">
+                <Server size={24} className="text-trakend-accent" />
+                All Drives
+              </h2>
+              <p className="text-sm text-trakend-text-secondary mt-1">
+                {allDrives.length} drive(s) detected. Click a mounted drive to browse files.
+              </p>
             </div>
 
-            {/* Drive cards grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {mounts.map((m, i) => {
-                const info = getArrayLabel(m)
-                return (
-                  <button
-                    key={i}
-                    onClick={() => navigate(m.mountpoint)}
-                    onDragOver={e => handleDragOver(e, m.mountpoint)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={e => handleDrop(e, m.mountpoint)}
-                    className={clsx(
-                      'text-left bg-trakend-surface rounded-xl border-2 p-5 transition-all duration-200 hover:shadow-lg hover:shadow-black/20 group',
-                      getRoleColor(info.role),
-                      dropTarget === m.mountpoint && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
-                    )}
-                  >
-                    {/* Header */}
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="p-2.5 rounded-lg bg-trakend-dark">
-                        {getRoleIcon(info.role)}
-                      </div>
-                      <span className={clsx('text-xs font-medium px-2 py-1 rounded-full border', getRoleBadgeColor(info.role))}>
-                        {info.role === 'data' ? 'Data' : info.role === 'parity' ? 'Parity' : info.role === 'cache' ? 'Cache' : 'Unassigned'}
-                      </span>
-                    </div>
+            {/* Assigned / Array Drives */}
+            {(() => {
+              // Hide root/boot system partitions — keep /data since it's usable storage
+              const HIDDEN_MOUNTS = new Set(['/', '/boot', '/boot/efi'])
+              const visibleDrives = allDrives.filter(d => !d.mount_point || !HIDDEN_MOUNTS.has(d.mount_point))
+              const parityDrives = visibleDrives.filter(d => d.role === 'parity' || d.role === 'parity2')
+              const dataDrives = visibleDrives.filter(d => d.role === 'data').sort((a, b) => (a.slot || 0) - (b.slot || 0))
+              const cacheDrives = visibleDrives.filter(d => d.role === 'cache')
+              const unassignedDrives = visibleDrives.filter(d => d.role === 'unassigned' || d.role === 'hot_spare')
+              const orderedDrives = [...parityDrives, ...dataDrives, ...cacheDrives, ...unassignedDrives]
 
-                    {/* Name */}
-                    <h3 className="text-lg font-bold text-trakend-text-primary group-hover:text-trakend-accent transition-colors">
-                      {info.label}
-                    </h3>
-                    <div className="text-xs text-trakend-text-secondary mt-0.5 font-mono truncate">
-                      {m.device} → {m.mountpoint}
-                    </div>
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {orderedDrives.map((drive) => {
+                    const label = getDriveLabel(drive)
+                    const isMounted = !!drive.mount_point
+                    const usagePercent = drive.size_bytes > 0 && drive.usage_bytes
+                      ? Math.round((drive.usage_bytes / drive.size_bytes) * 100) : 0
+                    const freeBytes = drive.size_bytes - (drive.usage_bytes || 0)
 
-                    {/* Usage bar */}
-                    <div className="mt-4">
-                      <div className="flex justify-between text-xs text-trakend-text-secondary mb-1.5">
-                        <span>{formatSize(m.used)} used</span>
-                        <span>{formatSize(m.available)} free</span>
-                      </div>
-                      <div className="h-2.5 bg-trakend-dark rounded-full overflow-hidden">
-                        <div
-                          className={clsx(
-                            'h-full rounded-full transition-all duration-500',
-                            m.usePercent > 90 ? 'bg-trakend-error' : m.usePercent > 70 ? 'bg-trakend-warning' : 'bg-trakend-accent'
-                          )}
-                          style={{ width: `${m.usePercent}%` }}
-                        />
-                      </div>
-                      <div className="flex justify-between text-xs mt-1.5">
-                        <span className="text-trakend-text-secondary">{m.fstype.toUpperCase()}</span>
-                        <span className={clsx(
-                          'font-semibold',
-                          m.usePercent > 90 ? 'text-trakend-error' : m.usePercent > 70 ? 'text-trakend-warning' : 'text-trakend-accent'
-                        )}>
-                          {m.usePercent}%
-                        </span>
-                      </div>
-                    </div>
+                    return (
+                      <button
+                        key={drive.id}
+                        onClick={() => isMounted && drive.mount_point ? navigate(drive.mount_point) : undefined}
+                        disabled={!isMounted}
+                        onDragOver={isMounted && drive.mount_point ? (e => handleDragOver(e, drive.mount_point!)) : undefined}
+                        onDragLeave={isMounted ? handleDragLeave : undefined}
+                        onDrop={isMounted && drive.mount_point ? (e => handleDrop(e, drive.mount_point!)) : undefined}
+                        className={clsx(
+                          'text-left bg-trakend-surface rounded-xl border-2 p-5 transition-all duration-200 group',
+                          isMounted ? 'hover:shadow-lg hover:shadow-black/20 cursor-pointer' : 'opacity-60 cursor-default',
+                          getRoleColor(drive.role),
+                          isMounted && drive.mount_point && dropTarget === drive.mount_point && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
+                        )}
+                      >
+                        {/* Header */}
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="p-2.5 rounded-lg bg-trakend-dark">
+                            {getRoleIcon(drive.role)}
+                          </div>
+                          <div className="flex flex-col items-end gap-1">
+                            <span className={clsx('text-xs font-medium px-2 py-0.5 rounded-full border', getRoleBadgeColor(drive.role))}>
+                              {drive.role === 'data' ? 'Data' : drive.role === 'parity' ? 'Parity' : drive.role === 'parity2' ? 'Parity 2' : drive.role === 'cache' ? 'Cache' : drive.role === 'hot_spare' ? 'Hot Spare' : 'Unassigned'}
+                            </span>
+                            {!isMounted && (
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-red-900/30 text-red-400 border border-red-700/30">Not Mounted</span>
+                            )}
+                          </div>
+                        </div>
 
-                    {/* Total size */}
-                    <div className="mt-3 pt-3 border-t border-trakend-border/50">
-                      <div className="text-xs text-trakend-text-secondary">
-                        Total: <span className="text-trakend-text-primary font-medium">{formatSize(m.size)}</span>
-                      </div>
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
+                        {/* Name + device info */}
+                        <h3 className={clsx('text-lg font-bold transition-colors', isMounted ? 'text-trakend-text-primary group-hover:text-trakend-accent' : 'text-trakend-text-secondary')}>
+                          {label}
+                        </h3>
+                        <div className="text-xs text-trakend-text-secondary mt-0.5 truncate" title={drive.model}>
+                          {drive.model}
+                        </div>
+                        <div className="text-xs text-trakend-text-secondary font-mono truncate mt-0.5">
+                          {drive.device}{drive.mount_point ? ` → ${drive.mount_point}` : ''}
+                        </div>
+
+                        {/* Usage bar (only for mounted drives with usage data) */}
+                        {isMounted && drive.usage_bytes !== undefined ? (
+                          <div className="mt-3">
+                            <div className="flex justify-between text-xs text-trakend-text-secondary mb-1">
+                              <span>{formatSize(drive.usage_bytes)} used</span>
+                              <span>{formatSize(freeBytes > 0 ? freeBytes : 0)} free</span>
+                            </div>
+                            <div className="h-2 bg-trakend-dark rounded-full overflow-hidden">
+                              <div
+                                className={clsx(
+                                  'h-full rounded-full transition-all duration-500',
+                                  usagePercent > 90 ? 'bg-trakend-error' : usagePercent > 70 ? 'bg-trakend-warning' : 'bg-trakend-accent'
+                                )}
+                                style={{ width: `${usagePercent}%` }}
+                              />
+                            </div>
+                            <div className="flex justify-between text-xs mt-1">
+                              <span className="text-trakend-text-secondary">{drive.filesystem?.toUpperCase() || '?'}</span>
+                              <span className={clsx('font-semibold', usagePercent > 90 ? 'text-trakend-error' : usagePercent > 70 ? 'text-trakend-warning' : 'text-trakend-accent')}>
+                                {usagePercent}%
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 text-xs text-trakend-text-secondary">
+                            {drive.filesystem ? drive.filesystem.toUpperCase() : 'No filesystem'} • {drive.size_human}
+                          </div>
+                        )}
+
+                        {/* Footer: health + temp */}
+                        <div className="mt-3 pt-2 border-t border-trakend-border/50 flex items-center justify-between">
+                          <span className={clsx('text-xs font-medium px-1.5 py-0.5 rounded',
+                            drive.health === 'healthy' ? 'bg-green-500/20 text-green-400' :
+                            drive.health === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
+                            drive.health === 'failing' || drive.health === 'failed' ? 'bg-red-500/20 text-red-400' :
+                            'bg-gray-500/20 text-gray-400'
+                          )}>
+                            {drive.health.toUpperCase()}
+                          </span>
+                          <div className="flex items-center gap-2 text-xs text-trakend-text-secondary">
+                            {drive.temperature > 0 && (
+                              <span className={drive.temperature > 50 ? 'text-orange-400' : ''}>{drive.temperature}°C</span>
+                            )}
+                            <span>{drive.transport.toUpperCase()}</span>
+                            <span>{drive.rpm > 0 ? `${drive.rpm} RPM` : 'SSD'}</span>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )
+            })()}
 
             {/* Quick access section */}
             <div className="mt-8">
               <h3 className="text-sm font-semibold text-trakend-text-secondary uppercase tracking-wider mb-3">Quick Access</h3>
               <div className="flex flex-wrap gap-2">
-                {['/', '/data', '/data/shares', '/data/backups', '/mnt/disks', '/tmp'].map(p => (
+                {['/data', '/data/shares', '/data/backups', '/mnt/disks', '/tmp'].map(p => (
                   <button key={p} onClick={() => navigate(p)}
                     className="px-4 py-2 rounded-lg bg-trakend-surface border border-trakend-border text-sm text-trakend-text-secondary hover:text-trakend-text-primary hover:border-trakend-accent/50 transition-colors">
                     {p}
