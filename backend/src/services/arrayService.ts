@@ -69,6 +69,7 @@ export interface ArrayConfig {
 
 export interface ArrayDriveAssignment {
   drive_id: string;
+  device: string;
   role: DriveRole;
   slot: number;
   added_at: number;
@@ -670,38 +671,42 @@ export class ArrayService {
       // Mount all data drives
       for (const assignment of dataDrives) {
         const drive = this.drives.get(assignment.drive_id);
-        if (!drive) {
-          this.logger.error('ARRAY', `Drive ${assignment.drive_id} (slot ${assignment.slot}) not found in drives map — skipping`);
+        // Use device from drives map if available, otherwise fall back to DB device path
+        const devicePath = drive?.device || assignment.device;
+        if (!devicePath || !fs.existsSync(devicePath)) {
+          this.logger.error('ARRAY', `Drive ${assignment.drive_id} (slot ${assignment.slot}) device ${devicePath} not found — skipping`);
           continue;
         }
 
         const mountPoint = `/mnt/disks/disk${assignment.slot}`;
         fs.mkdirSync(mountPoint, { recursive: true });
 
+        // Find the mountable partition (first partition, or whole device if no partitions)
+        let partDev = devicePath;
+        try {
+          const firstPart = execSync(`lsblk -n -o NAME "${devicePath}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
+          if (firstPart) partDev = `/dev/${firstPart}`;
+        } catch { /* use whole device */ }
+
+        this.logger.info('ARRAY', `Slot ${assignment.slot}: device=${devicePath} partDev=${partDev} driveMapHit=${!!drive}`);
+
         // Check if already mounted at the right place
         try {
-          const currentMount = execSync(`findmnt -n -o TARGET "${drive.device}" 2>/dev/null || findmnt -n -o TARGET "${drive.device}1" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+          const currentMount = execSync(`findmnt -n -o TARGET "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
           if (currentMount === mountPoint) {
-            drive.mount_point = mountPoint;
-            this.logger.info('ARRAY', `${drive.device} already mounted at ${mountPoint}`);
+            if (drive) drive.mount_point = mountPoint;
+            this.logger.info('ARRAY', `${partDev} already mounted at ${mountPoint}`);
             continue;
           }
           // If mounted elsewhere, unmount first
           if (currentMount) {
-            this.logger.info('ARRAY', `${drive.device} mounted at ${currentMount}, remounting to ${mountPoint}`);
+            this.logger.info('ARRAY', `${partDev} mounted at ${currentMount}, remounting to ${mountPoint}`);
             try { execSync(`umount "${currentMount}" 2>/dev/null`, { timeout: 10000 }); } catch { /* ignore */ }
           }
         } catch { /* not mounted anywhere */ }
 
-        // Get first partition
-        let partDev = drive.device;
-        try {
-          const firstPart = execSync(`lsblk -n -o NAME "${drive.device}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
-          if (firstPart) partDev = `/dev/${firstPart}`;
-        } catch { /* use whole device */ }
-
         // Get filesystem type for explicit mount
-        let fsType = drive.filesystem || '';
+        let fsType = drive?.filesystem || '';
         if (!fsType) {
           try {
             fsType = execSync(`blkid -s TYPE -o value "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
@@ -714,7 +719,7 @@ export class ArrayService {
             ? `mount -t ${fsType} "${partDev}" "${mountPoint}"`
             : `mount "${partDev}" "${mountPoint}"`;
           execSync(mountCmd, { timeout: 10000 });
-          drive.mount_point = mountPoint;
+          if (drive) drive.mount_point = mountPoint;
           this.logger.info('ARRAY', `Mounted ${partDev} (${fsType || 'auto'}) at ${mountPoint}`);
         } catch (err) {
           this.logger.error('ARRAY', `Failed to mount ${partDev} at ${mountPoint}: ${err}`);
