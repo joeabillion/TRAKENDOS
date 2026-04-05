@@ -85,7 +85,7 @@ export const Dashboard: React.FC = () => {
   }, [dragIdx])
 
   return (
-    <div className="bg-trakend-dark min-h-full">
+    <div className="bg-trakend-dark min-h-full w-full flex-1">
       <div className="p-6 w-full">
         {/* Quick Stats Row */}
         {stats && (
