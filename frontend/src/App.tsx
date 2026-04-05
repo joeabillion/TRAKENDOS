@@ -21,11 +21,11 @@ type AppState = 'booting' | 'login' | 'authenticated'
 
 function AppLayout() {
   return (
-    <div className="flex h-screen bg-trakend-dark overflow-hidden">
+    <div className="flex h-screen w-screen bg-trakend-dark overflow-hidden">
       <Sidebar />
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden" style={{ minWidth: 0, width: 'calc(100vw - 16rem)' }}>
         <TopBar />
-        <main className="flex-1 overflow-auto flex flex-col min-w-0">
+        <main className="flex-1 overflow-auto w-full" style={{ display: 'flex', flexDirection: 'column' }}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/array" element={<ArrayPage />} />
