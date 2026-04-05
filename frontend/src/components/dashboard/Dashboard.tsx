@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
 import { formatBytes } from '../../utils/formatters'
 import { CpuWidget } from './CpuWidget'
@@ -6,7 +6,7 @@ import { MemoryWidget } from './MemoryWidget'
 import { StorageWidget } from './StorageWidget'
 import { GpuWidget } from './GpuWidget'
 import { NetworkWidget } from './NetworkWidget'
-import { Server, Cpu, HardDrive, Box, Lock, Unlock, GripVertical, Power, RotateCw } from 'lucide-react'
+import { Server, Cpu, HardDrive, Box, Lock, Unlock, Move, Power, RotateCw, RotateCcw } from 'lucide-react'
 import api from '../../utils/api'
 
 const WIDGET_MAP: Record<string, { label: string; component: React.FC }> = {
@@ -17,80 +17,130 @@ const WIDGET_MAP: Record<string, { label: string; component: React.FC }> = {
   network: { label: 'Network', component: NetworkWidget },
 }
 
-const DEFAULT_ORDER = ['cpu', 'memory', 'gpu', 'storage', 'network']
-const STORAGE_KEY = 'trakend-dashboard-widget-order'
+const WIDGET_KEYS = ['cpu', 'memory', 'gpu', 'storage', 'network']
+const LAYOUT_KEY = 'trakend-dashboard-layout-v2'
 
-function loadOrder(): string[] {
+interface WidgetLayout {
+  x: number
+  y: number
+  w: number
+  h: number
+  z: number
+}
+
+function defaultLayouts(): Record<string, WidgetLayout> {
+  return {
+    cpu:     { x: 0,   y: 0,   w: 100, h: 400, z: 1 },
+    network: { x: 0,   y: 410, w: 50,  h: 300, z: 1 },
+    storage: { x: 50,  y: 410, w: 50,  h: 300, z: 1 },
+    memory:  { x: 0,   y: 720, w: 50,  h: 250, z: 1 },
+    gpu:     { x: 50,  y: 720, w: 50,  h: 250, z: 1 },
+  }
+}
+
+function loadLayouts(): Record<string, WidgetLayout> {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY)
+    const saved = localStorage.getItem(LAYOUT_KEY)
     if (saved) {
-      const parsed = JSON.parse(saved) as string[]
-      if (Array.isArray(parsed) && parsed.every(k => k in WIDGET_MAP)) return parsed
+      const parsed = JSON.parse(saved)
+      if (typeof parsed === 'object' && parsed.cpu) return parsed
     }
   } catch { /* ignore */ }
-  return [...DEFAULT_ORDER]
+  return defaultLayouts()
 }
 
-function saveOrder(order: string[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(order))
+function saveLayouts(layouts: Record<string, WidgetLayout>) {
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layouts))
 }
-
 
 export const Dashboard: React.FC = () => {
   const stats = useSystemStats()
-  const [widgetOrder, setWidgetOrder] = useState<string[]>(loadOrder)
+  const [layouts, setLayouts] = useState<Record<string, WidgetLayout>>(loadLayouts)
   const [locked, setLocked] = useState(true)
-  const [dragIdx, setDragIdx] = useState<number | null>(null)
-  const [overIdx, setOverIdx] = useState<number | null>(null)
   const [showPowerConfirm, setShowPowerConfirm] = useState<'reboot' | 'shutdown' | null>(null)
-  const dragNode = useRef<HTMLDivElement | null>(null)
+  const [activeWidget, setActiveWidget] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const dragState = useRef<{ type: 'move' | 'resize'; key: string; startX: number; startY: number; origX: number; origY: number; origW: number; origH: number } | null>(null)
 
-  useEffect(() => { saveOrder(widgetOrder) }, [widgetOrder])
+  useEffect(() => { saveLayouts(layouts) }, [layouts])
 
-  const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
-    if (locked) return
-    setDragIdx(idx)
-    dragNode.current = e.currentTarget as HTMLDivElement
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', String(idx))
-    requestAnimationFrame(() => {
-      if (dragNode.current) dragNode.current.style.opacity = '0.4'
+  const bringToFront = useCallback((key: string) => {
+    setLayouts(prev => {
+      const maxZ = Math.max(...Object.values(prev).map(l => l.z))
+      if (prev[key].z === maxZ) return prev
+      return { ...prev, [key]: { ...prev[key], z: maxZ + 1 } }
     })
-  }, [locked])
-
-  const handleDragEnd = useCallback(() => {
-    if (dragNode.current) dragNode.current.style.opacity = '1'
-    setDragIdx(null)
-    setOverIdx(null)
-    dragNode.current = null
+    setActiveWidget(key)
   }, [])
 
-  const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
+  const handleMouseDown = useCallback((e: React.MouseEvent, key: string, type: 'move' | 'resize') => {
+    if (locked) return
     e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    if (dragIdx !== null && idx !== dragIdx) setOverIdx(idx)
-  }, [dragIdx])
+    e.stopPropagation()
+    bringToFront(key)
+    const container = containerRef.current
+    if (!container) return
+    const layout = layouts[key]
+    const rect = container.getBoundingClientRect()
+    dragState.current = {
+      type,
+      key,
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: (layout.x / 100) * rect.width,
+      origY: layout.y,
+      origW: (layout.w / 100) * rect.width,
+      origH: layout.h,
+    }
 
-  const handleDrop = useCallback((e: React.DragEvent, idx: number) => {
-    e.preventDefault()
-    if (dragIdx === null || dragIdx === idx) return
-    setWidgetOrder(prev => {
-      const next = [...prev]
-      const [moved] = next.splice(dragIdx, 1)
-      next.splice(idx, 0, moved)
-      return next
-    })
-    setDragIdx(null)
-    setOverIdx(null)
-  }, [dragIdx])
+    const handleMouseMove = (ev: MouseEvent) => {
+      if (!dragState.current || !containerRef.current) return
+      const ds = dragState.current
+      const r = containerRef.current.getBoundingClientRect()
+      const dx = ev.clientX - ds.startX
+      const dy = ev.clientY - ds.startY
+
+      if (ds.type === 'move') {
+        const newX = Math.max(0, Math.min(r.width - ds.origW, ds.origX + dx))
+        const newY = Math.max(0, ds.origY + dy)
+        setLayouts(prev => ({
+          ...prev,
+          [ds.key]: { ...prev[ds.key], x: (newX / r.width) * 100, y: newY },
+        }))
+      } else {
+        const newW = Math.max(200, ds.origW + dx)
+        const newH = Math.max(100, ds.origH + dy)
+        setLayouts(prev => ({
+          ...prev,
+          [ds.key]: { ...prev[ds.key], w: (newW / r.width) * 100, h: newH },
+        }))
+      }
+    }
+
+    const handleMouseUp = () => {
+      dragState.current = null
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+  }, [locked, layouts, bringToFront])
+
+  const resetLayout = useCallback(() => {
+    setLayouts(defaultLayouts())
+  }, [])
+
+  // Calculate container height from widget positions
+  const containerHeight = Math.max(800, ...Object.values(layouts).map(l => l.y + l.h + 20))
 
   return (
     <div className="bg-trakend-dark min-h-full w-full flex-1">
-      <div className="p-6 w-full">
+      <div className="p-4 w-full">
         {/* Quick Stats Row */}
         {stats && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-3">
               <div className="flex items-center gap-2 mb-1">
                 <Server size={14} className="text-trakend-accent" />
                 <span className="text-xs text-trakend-text-secondary uppercase tracking-wide">System</span>
@@ -98,8 +148,7 @@ export const Dashboard: React.FC = () => {
               <div className="text-sm font-bold text-trakend-text-primary truncate">{stats.hostname}</div>
               <div className="text-xs text-trakend-text-secondary font-mono truncate">{stats.os}</div>
             </div>
-
-            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4">
+            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-3">
               <div className="flex items-center gap-2 mb-1">
                 <Cpu size={14} className="text-trakend-accent" />
                 <span className="text-xs text-trakend-text-secondary uppercase tracking-wide">CPU</span>
@@ -107,21 +156,15 @@ export const Dashboard: React.FC = () => {
               <div className="text-sm font-bold text-trakend-text-primary">{stats.cpu.usage.toFixed(1)}%</div>
               <div className="text-xs text-trakend-text-secondary">{stats.cpu.cores}C / {stats.cpu.threads}T @ {((stats.cpu.clockSpeed || 0) / 1000).toFixed(1)} GHz</div>
             </div>
-
-            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4">
+            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-3">
               <div className="flex items-center gap-2 mb-1">
                 <HardDrive size={14} className="text-trakend-accent" />
                 <span className="text-xs text-trakend-text-secondary uppercase tracking-wide">Memory</span>
               </div>
-              <div className="text-sm font-bold text-trakend-text-primary">
-                {formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)}
-              </div>
-              <div className="text-xs text-trakend-text-secondary">
-                {stats.memory.total > 0 ? ((stats.memory.used / stats.memory.total) * 100).toFixed(0) : 0}% used
-              </div>
+              <div className="text-sm font-bold text-trakend-text-primary">{formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)}</div>
+              <div className="text-xs text-trakend-text-secondary">{stats.memory.total > 0 ? ((stats.memory.used / stats.memory.total) * 100).toFixed(0) : 0}% used</div>
             </div>
-
-            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4">
+            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-3">
               <div className="flex items-center gap-2 mb-1">
                 <Box size={14} className="text-trakend-accent" />
                 <span className="text-xs text-trakend-text-secondary uppercase tracking-wide">Docker</span>
@@ -129,77 +172,86 @@ export const Dashboard: React.FC = () => {
               <div className="text-sm font-bold text-trakend-text-primary">{stats.docker.total} containers</div>
               <div className="text-xs">
                 <span className="text-trakend-success">{stats.docker.running} running</span>
-                {stats.docker.stopped > 0 && (
-                  <span className="text-trakend-warning ml-2">{stats.docker.stopped} stopped</span>
-                )}
+                {stats.docker.stopped > 0 && <span className="text-trakend-warning ml-2">{stats.docker.stopped} stopped</span>}
               </div>
             </div>
           </div>
         )}
 
-        {/* Power Controls & Lock toggle */}
-        <div className="flex items-center justify-between mb-3">
+        {/* Controls */}
+        <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowPowerConfirm('reboot')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-warning hover:border-trakend-warning transition-colors"
-              title="Restart Server"
-            >
-              <RotateCw size={13} />
-              Restart
+            <button onClick={() => setShowPowerConfirm('reboot')}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-warning hover:border-trakend-warning transition-colors">
+              <RotateCw size={13} /> Restart
             </button>
-            <button
-              onClick={() => setShowPowerConfirm('shutdown')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-error hover:border-trakend-error transition-colors"
-              title="Shut Down Server"
-            >
-              <Power size={13} />
-              Shut Down
+            <button onClick={() => setShowPowerConfirm('shutdown')}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-error hover:border-trakend-error transition-colors">
+              <Power size={13} /> Shut Down
             </button>
           </div>
-          <button
-            onClick={() => setLocked(!locked)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-            style={{
-              background: locked ? 'transparent' : 'var(--color-accent)',
-              color: locked ? 'var(--color-text-secondary)' : '#fff',
-              border: locked ? '1px solid var(--color-border)' : '1px solid transparent',
-            }}
-            title={locked ? 'Unlock widgets to rearrange & resize' : 'Lock widgets in place'}
-          >
-            {locked ? <Lock size={13} /> : <Unlock size={13} />}
-            {locked ? 'Locked' : 'Unlocked — drag to rearrange, click resize to change size'}
-          </button>
+          <div className="flex items-center gap-2">
+            {!locked && (
+              <button onClick={resetLayout}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-text-primary transition-colors">
+                <RotateCcw size={13} /> Reset Layout
+              </button>
+            )}
+            <button onClick={() => setLocked(!locked)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              style={{
+                background: locked ? 'transparent' : 'var(--color-accent)',
+                color: locked ? 'var(--color-text-secondary)' : '#fff',
+                border: locked ? '1px solid var(--color-border)' : '1px solid transparent',
+              }}>
+              {locked ? <Lock size={13} /> : <Unlock size={13} />}
+              {locked ? 'Locked' : 'Unlocked — drag & resize widgets freely'}
+            </button>
+          </div>
         </div>
 
-        {/* Widgets Stack */}
-        <div className="flex flex-col gap-4">
-          {widgetOrder.map((key, idx) => {
+        {/* Free-form Widget Canvas */}
+        <div ref={containerRef} className="relative w-full" style={{ height: containerHeight }}>
+          {WIDGET_KEYS.map(key => {
             const w = WIDGET_MAP[key]
             if (!w) return null
             const Comp = w.component
+            const layout = layouts[key]
+            const isActive = activeWidget === key && !locked
             return (
               <div
                 key={key}
-                draggable={!locked}
-                onDragStart={e => handleDragStart(e, idx)}
-                onDragEnd={handleDragEnd}
-                onDragOver={e => handleDragOver(e, idx)}
-                onDrop={e => handleDrop(e, idx)}
-                className="relative group w-full"
+                className="absolute overflow-auto"
                 style={{
-                  transition: 'transform 0.15s, box-shadow 0.15s',
-                  transform: overIdx === idx && dragIdx !== null ? 'scale(1.005)' : 'scale(1)',
-                  boxShadow: overIdx === idx && dragIdx !== null ? '0 0 0 2px var(--color-accent)' : 'none',
+                  left: `${layout.x}%`,
+                  top: layout.y,
+                  width: `${layout.w}%`,
+                  height: layout.h,
+                  zIndex: layout.z,
+                  outline: isActive ? '2px solid var(--color-accent)' : 'none',
                   borderRadius: '0.5rem',
+                  transition: dragState.current?.key === key ? 'none' : 'outline 0.15s',
                 }}
+                onMouseDown={() => { if (!locked) bringToFront(key) }}
               >
+                {/* Drag handle — top bar when unlocked */}
                 {!locked && (
-                  <div className="absolute top-2 left-2 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <div className="cursor-grab active:cursor-grabbing bg-trakend-dark/80 rounded p-1">
-                      <GripVertical size={16} className="text-trakend-text-secondary" />
-                    </div>
+                  <div
+                    className="absolute top-0 left-0 right-0 h-7 z-20 flex items-center gap-1 px-2 cursor-move rounded-t-lg"
+                    style={{ background: 'rgba(0,0,0,0.5)' }}
+                    onMouseDown={e => handleMouseDown(e, key, 'move')}
+                  >
+                    <Move size={12} className="text-trakend-text-secondary" />
+                    <span className="text-[10px] text-trakend-text-secondary font-medium uppercase tracking-wide">{w.label}</span>
                   </div>
+                )}
+                {/* Resize handle — bottom-right corner */}
+                {!locked && (
+                  <div
+                    className="absolute bottom-0 right-0 w-5 h-5 z-20 cursor-se-resize"
+                    style={{ background: 'linear-gradient(135deg, transparent 50%, var(--color-accent) 50%)', borderRadius: '0 0 0.5rem 0' }}
+                    onMouseDown={e => handleMouseDown(e, key, 'resize')}
+                  />
                 )}
                 <Comp />
               </div>
@@ -221,25 +273,18 @@ export const Dashboard: React.FC = () => {
                 : 'The server will shut down. You will need physical access to turn it back on.'}
             </p>
             <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setShowPowerConfirm(null)}
-                className="px-4 py-2 rounded-lg text-sm bg-trakend-surface-light text-trakend-text-secondary hover:text-trakend-text-primary transition-colors"
-              >
+              <button onClick={() => setShowPowerConfirm(null)}
+                className="px-4 py-2 rounded-lg text-sm bg-trakend-surface-light text-trakend-text-secondary hover:text-trakend-text-primary transition-colors">
                 Cancel
               </button>
               <button
                 onClick={async () => {
-                  try {
-                    await api.post(`/system/${showPowerConfirm === 'reboot' ? 'reboot' : 'shutdown'}`)
-                  } catch {}
+                  try { await api.post(`/system/${showPowerConfirm === 'reboot' ? 'reboot' : 'shutdown'}`) } catch {}
                   setShowPowerConfirm(null)
                 }}
                 className={`px-4 py-2 rounded-lg text-sm text-white transition-colors ${
-                  showPowerConfirm === 'reboot'
-                    ? 'bg-trakend-warning hover:bg-opacity-90'
-                    : 'bg-trakend-error hover:bg-opacity-90'
-                }`}
-              >
+                  showPowerConfirm === 'reboot' ? 'bg-trakend-warning hover:bg-opacity-90' : 'bg-trakend-error hover:bg-opacity-90'
+                }`}>
                 {showPowerConfirm === 'reboot' ? 'Restart Now' : 'Shut Down Now'}
               </button>
             </div>
