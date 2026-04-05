@@ -148,7 +148,36 @@ export class SystemMonitor {
 
   private broadcastStats(): void {
     this.getOverview().then(async (overview) => {
-      // Transform to frontend's expected SystemStats format
+      // Gather extra data in parallel
+      const [cpuTemp, processes, disksIO, networkStats, dockerContainers, sensors] = await Promise.all([
+        si.cpuTemperature().catch(() => ({ main: 0, cores: [], max: 0 })),
+        si.processes().catch(() => ({ all: 0, running: 0, blocked: 0, sleeping: 0, list: [] })),
+        si.disksIO().catch(() => ({ rIO_sec: 0, wIO_sec: 0, rWaitTime: 0, wWaitTime: 0 })),
+        si.networkStats().catch(() => []),
+        this.getDockerContainerDetails(),
+        this.getSensorData(),
+      ]);
+
+      // Build network stats map for rx/tx speeds
+      const netStatsMap: Record<string, any> = {};
+      if (Array.isArray(networkStats)) {
+        for (const ns of networkStats) { netStatsMap[ns.iface] = ns; }
+      }
+
+      // Top processes by CPU
+      const topProcesses = (processes.list || [])
+        .sort((a: any, b: any) => (b.cpu || 0) - (a.cpu || 0))
+        .slice(0, 15)
+        .map((p: any) => ({
+          pid: p.pid,
+          name: p.name,
+          cpu: p.cpu || 0,
+          mem: p.mem || 0,
+          memRss: p.memRss || 0,
+          state: p.state || '',
+          user: p.user || '',
+        }));
+
       const frontendStats = {
         hostname: overview.osInfo.hostname,
         os: `${overview.osInfo.distro} ${overview.osInfo.release}`,
@@ -160,8 +189,8 @@ export class SystemMonitor {
           threads: overview.cpu.threads,
           usage: overview.cpuUsage.currentLoad,
           perCoreUsage: overview.cpuUsage.cores.map((c: any) => c.load),
-          temperature: overview.cpuUsage.cores.length > 0 ? 0 : 0, // si doesn't always provide per-CPU temp
-          clockSpeed: overview.cpu.speed * 1000, // GHz to MHz
+          temperature: (cpuTemp as any).main || 0,
+          clockSpeed: overview.cpu.speed * 1000,
         },
         memory: {
           total: overview.memory.total,
@@ -172,6 +201,9 @@ export class SystemMonitor {
           cached: overview.memory.cached || 0,
           available: overview.memory.available || 0,
           sticks: [],
+          swapTotal: overview.memory.swaptotal || 0,
+          swapUsed: overview.memory.swapused || 0,
+          swapFree: overview.memory.swapfree || 0,
         },
         storage: overview.disks.map((d: any) => ({
           name: d.device,
@@ -195,50 +227,93 @@ export class SystemMonitor {
           utilization: g.utilization || 0,
           driver: g.driver || '',
         })),
-        network: (overview.networkInterfaces as any[]).filter((n: any) => n.ip4).map((n: any) => ({
-          name: n.iface,
-          ip: n.ip4,
-          speed: n.ifaceSpeed || 0,
-          rxBytes: 0,
-          txBytes: 0,
-          rxSpeed: 0,
-          txSpeed: 0,
-        })),
+        network: (overview.networkInterfaces as any[]).filter((n: any) => n.ip4).map((n: any) => {
+          const ns = netStatsMap[n.iface];
+          return {
+            name: n.iface,
+            ip: n.ip4,
+            speed: n.ifaceSpeed || 0,
+            rxBytes: ns?.rx_bytes || 0,
+            txBytes: ns?.tx_bytes || 0,
+            rxSpeed: ns?.rx_sec || 0,
+            txSpeed: ns?.tx_sec || 0,
+          };
+        }),
         docker: await this.getDockerStats(),
+        // NEW: extended data
+        processes: {
+          total: processes.all || 0,
+          running: processes.running || 0,
+          blocked: processes.blocked || 0,
+          sleeping: processes.sleeping || 0,
+          list: topProcesses,
+        },
+        diskIO: {
+          readPerSec: (disksIO as any).rIO_sec || 0,
+          writePerSec: (disksIO as any).wIO_sec || 0,
+          readBytesPerSec: (disksIO as any).rIO_sec || 0,
+          writeBytesPerSec: (disksIO as any).wIO_sec || 0,
+        },
+        temperatures: {
+          cpu: (cpuTemp as any).main || 0,
+          cpuCores: (cpuTemp as any).cores || [],
+          cpuMax: (cpuTemp as any).max || 0,
+          sensors: sensors,
+        },
+        dockerContainers: dockerContainers,
       };
 
-      // Get CPU temperature from si
-      si.cpuTemperature().then((temp: any) => {
-        if (temp && temp.main) {
-          frontendStats.cpu.temperature = temp.main;
+      const message = JSON.stringify({ type: 'system-stats', payload: frontendStats });
+      for (const client of this.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(message);
         }
+      }
 
-        const message = JSON.stringify({
-          type: 'system-stats',
-          payload: frontendStats,
-        });
-
-        for (const client of this.clients) {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(message);
-          }
-        }
-      }).catch(() => {
-        const message = JSON.stringify({
-          type: 'system-stats',
-          payload: frontendStats,
-        });
-
-        for (const client of this.clients) {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(message);
-          }
-        }
-      });
-
-      // Pattern detection
       this.logger.detectSystemPatterns(overview);
     });
+  }
+
+  private async getDockerContainerDetails(): Promise<any[]> {
+    try {
+      const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+      const containers = await docker.listContainers({ all: true });
+      return containers.map((c: any) => ({
+        id: c.Id?.slice(0, 12) || '',
+        name: (c.Names?.[0] || '').replace('/', ''),
+        image: c.Image || '',
+        state: c.State || '',
+        status: c.Status || '',
+        ports: (c.Ports || []).map((p: any) => `${p.PublicPort || ''}:${p.PrivatePort || ''}`).filter((p: string) => p !== ':'),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  private async getSensorData(): Promise<any[]> {
+    try {
+      const { execSync } = require('child_process');
+      const raw = execSync('sensors -j 2>/dev/null || true', { encoding: 'utf-8', timeout: 3000 });
+      if (!raw.trim()) return [];
+      const parsed = JSON.parse(raw);
+      const sensors: any[] = [];
+      for (const [chip, data] of Object.entries(parsed)) {
+        if (typeof data !== 'object' || !data) continue;
+        for (const [label, readings] of Object.entries(data as any)) {
+          if (typeof readings !== 'object' || !readings) continue;
+          for (const [key, val] of Object.entries(readings as any)) {
+            if (key.includes('_input') && typeof val === 'number') {
+              const type = key.includes('fan') ? 'fan' : key.includes('temp') ? 'temp' : key.includes('in') ? 'voltage' : 'other';
+              sensors.push({ chip, label, type, value: val, unit: type === 'fan' ? 'RPM' : type === 'temp' ? '°C' : 'V' });
+            }
+          }
+        }
+      }
+      return sensors;
+    } catch {
+      return [];
+    }
   }
 
   async getOverview(): Promise<SystemOverview> {

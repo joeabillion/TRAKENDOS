@@ -6,6 +6,12 @@ import { MemoryWidget } from './MemoryWidget'
 import { StorageWidget } from './StorageWidget'
 import { GpuWidget } from './GpuWidget'
 import { NetworkWidget } from './NetworkWidget'
+import { ProcessesWidget } from './ProcessesWidget'
+import { DiskIOWidget } from './DiskIOWidget'
+import { TemperaturesWidget } from './TemperaturesWidget'
+import { SwapWidget } from './SwapWidget'
+import { DockerContainersWidget } from './DockerContainersWidget'
+import { ArrayStatusWidget } from './ArrayStatusWidget'
 import { Server, Cpu, HardDrive, Box, Lock, Unlock, Move, Power, RotateCw, RotateCcw } from 'lucide-react'
 import api from '../../utils/api'
 
@@ -15,9 +21,15 @@ const WIDGET_MAP: Record<string, { label: string; component: React.FC }> = {
   gpu: { label: 'GPU', component: GpuWidget },
   storage: { label: 'Storage', component: StorageWidget },
   network: { label: 'Network', component: NetworkWidget },
+  processes: { label: 'Processes', component: ProcessesWidget },
+  diskio: { label: 'Disk I/O', component: DiskIOWidget },
+  temperatures: { label: 'Temps & Fans', component: TemperaturesWidget },
+  swap: { label: 'Swap', component: SwapWidget },
+  docker_containers: { label: 'Docker Containers', component: DockerContainersWidget },
+  array_status: { label: 'Array Status', component: ArrayStatusWidget },
 }
 
-const WIDGET_KEYS = ['cpu', 'memory', 'gpu', 'storage', 'network']
+const WIDGET_KEYS = ['cpu', 'memory', 'gpu', 'storage', 'network', 'processes', 'diskio', 'temperatures', 'swap', 'docker_containers', 'array_status']
 const LAYOUT_KEY = 'trakend-dashboard-layout-v2'
 
 interface WidgetLayout {
@@ -30,23 +42,33 @@ interface WidgetLayout {
 
 function defaultLayouts(): Record<string, WidgetLayout> {
   return {
-    cpu:     { x: 0,   y: 0,   w: 100, h: 400, z: 1 },
-    network: { x: 0,   y: 410, w: 50,  h: 300, z: 1 },
-    storage: { x: 50,  y: 410, w: 50,  h: 300, z: 1 },
-    memory:  { x: 0,   y: 720, w: 50,  h: 250, z: 1 },
-    gpu:     { x: 50,  y: 720, w: 50,  h: 250, z: 1 },
+    cpu:                { x: 0,   y: 0,    w: 50,  h: 350, z: 1 },
+    temperatures:       { x: 50,  y: 0,    w: 50,  h: 350, z: 1 },
+    memory:             { x: 0,   y: 360,  w: 33,  h: 280, z: 1 },
+    swap:               { x: 33,  y: 360,  w: 33,  h: 280, z: 1 },
+    gpu:                { x: 66,  y: 360,  w: 34,  h: 280, z: 1 },
+    network:            { x: 0,   y: 650,  w: 50,  h: 300, z: 1 },
+    diskio:             { x: 50,  y: 650,  w: 50,  h: 300, z: 1 },
+    storage:            { x: 0,   y: 960,  w: 50,  h: 320, z: 1 },
+    array_status:       { x: 50,  y: 960,  w: 50,  h: 320, z: 1 },
+    docker_containers:  { x: 0,   y: 1290, w: 50,  h: 350, z: 1 },
+    processes:          { x: 50,  y: 1290, w: 50,  h: 350, z: 1 },
   }
 }
 
 function loadLayouts(): Record<string, WidgetLayout> {
+  const defaults = defaultLayouts()
   try {
     const saved = localStorage.getItem(LAYOUT_KEY)
     if (saved) {
       const parsed = JSON.parse(saved)
-      if (typeof parsed === 'object' && parsed.cpu) return parsed
+      if (typeof parsed === 'object' && parsed.cpu) {
+        // Merge: use saved positions but fill in any missing new widgets from defaults
+        return { ...defaults, ...parsed }
+      }
     }
   } catch { /* ignore */ }
-  return defaultLayouts()
+  return defaults
 }
 
 function saveLayouts(layouts: Record<string, WidgetLayout>) {

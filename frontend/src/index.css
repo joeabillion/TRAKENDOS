@@ -52,11 +52,12 @@ body {
   display: flex;
 }
 
-/* Force all page content to fill full width and height */
-main, main > *, main > * > * {
+/* Force React Router wrapper to fill full width and height */
+main > * {
   width: 100%;
-  flex: 1;
   min-width: 0;
+  flex: 1;
+  display: contents;
 }
 
 /* Custom Scrollbar */

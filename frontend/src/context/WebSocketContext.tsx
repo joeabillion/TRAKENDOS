@@ -27,6 +27,9 @@ export interface SystemStats {
       speed: string
       size: number
     }>
+    swapTotal?: number
+    swapUsed?: number
+    swapFree?: number
   }
   storage: Array<{
     name: string
@@ -64,6 +67,47 @@ export interface SystemStats {
     stopped: number
     total: number
   }
+  processes?: {
+    total: number
+    running: number
+    blocked: number
+    sleeping: number
+    list: Array<{
+      pid: number
+      name: string
+      cpu: number
+      mem: number
+      memRss: number
+      state: string
+      user: string
+    }>
+  }
+  diskIO?: {
+    readPerSec: number
+    writePerSec: number
+    readBytesPerSec: number
+    writeBytesPerSec: number
+  }
+  temperatures?: {
+    cpu: number
+    cpuCores: number[]
+    cpuMax: number
+    sensors: Array<{
+      chip: string
+      label: string
+      type: string
+      value: number
+      unit: string
+    }>
+  }
+  dockerContainers?: Array<{
+    id: string
+    name: string
+    image: string
+    state: string
+    status: string
+    ports: string[]
+  }>
 }
 
 export interface DockerEvent {

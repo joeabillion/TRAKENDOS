@@ -60,6 +60,13 @@ export class FileService {
     '/proc', '/sys', '/dev', '/run/lock',
   ];
 
+  // System directories hidden from root listing (still accessible if navigated directly)
+  private readonly HIDDEN_ROOT_DIRS = [
+    'boot', 'bin', 'dev', 'etc', 'lib', 'lib32', 'lib64', 'libx32',
+    'proc', 'root', 'run', 'sbin', 'snap', 'srv', 'sys', 'tmp', 'usr', 'var',
+    'lost+found', 'swap.img', 'initrd.img', 'initrd.img.old', 'vmlinuz', 'vmlinuz.old',
+  ];
+
   // System-critical paths that cannot be deleted, moved, or modified
   private readonly PROTECTED_PATHS = [
     // Root filesystem
@@ -134,6 +141,9 @@ export class FileService {
              'overlay', 'squashfs'].includes(fstype)) continue;
         if (device.startsWith('none') || device === 'udev') continue;
 
+        // Hide boot and EFI system partitions — users don't need these in the file browser
+        if (['/boot', '/boot/efi'].includes(mountpoint)) continue;
+
         const parseKB = (s: string) => parseInt(s.replace(/K$/, '')) * 1024 || 0;
 
         // Get label
@@ -143,6 +153,15 @@ export class FileService {
           label = lbl.trim();
         } catch { /* no label */ }
 
+        // Smart label generation
+        if (!label) {
+          if (mountpoint === '/') label = 'System';
+          else if (mountpoint === '/data') label = 'Data';
+          else if (mountpoint.startsWith('/mnt/disks/')) label = path.basename(mountpoint).charAt(0).toUpperCase() + path.basename(mountpoint).slice(1);
+          else if (mountpoint.startsWith('/mnt/')) label = path.basename(mountpoint).charAt(0).toUpperCase() + path.basename(mountpoint).slice(1);
+          else label = path.basename(mountpoint) || device;
+        }
+
         mounts.push({
           device,
           mountpoint,
@@ -151,9 +170,21 @@ export class FileService {
           used: parseKB(parts[4]),
           available: parseKB(parts[5]),
           usePercent: parseInt(parts[6].replace('%', '')) || 0,
-          label: label || path.basename(mountpoint) || device,
+          label,
         });
       }
+
+      // Sort: /data and /mnt drives first, then system (/)
+      mounts.sort((a, b) => {
+        const priority = (m: DiskMount) => {
+          if (m.mountpoint.startsWith('/mnt/disks/')) return 0;
+          if (m.mountpoint === '/data') return 1;
+          if (m.mountpoint.startsWith('/mnt/')) return 2;
+          if (m.mountpoint === '/') return 3;
+          return 4;
+        };
+        return priority(a) - priority(b);
+      });
 
       return mounts;
     } catch (error) {
@@ -188,6 +219,9 @@ export class FileService {
     for (const dirent of rawEntries) {
       // Skip hidden files unless requested
       if (!showHidden && dirent.name.startsWith('.')) continue;
+
+      // Hide system directories when browsing root
+      if (resolvedPath === '/' && this.HIDDEN_ROOT_DIRS.includes(dirent.name)) continue;
 
       const fullPath = path.join(resolvedPath, dirent.name);
 
