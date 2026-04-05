@@ -116,81 +116,165 @@ export class FileService {
 
   /**
    * List all mounted filesystems / drives
+   * Uses findmnt (reliable) + df (for size info) + /mnt/disks scan (catch array drives)
    */
   async getMounts(): Promise<DiskMount[]> {
-    try {
-      const { stdout } = await execAsync(
-        "df -BK --output=source,target,fstype,size,used,avail,pcent 2>/dev/null | tail -n +2"
-      );
+    const mountMap = new Map<string, DiskMount>(); // keyed by mountpoint to dedup
 
-      const mounts: DiskMount[] = [];
-      const lines = stdout.trim().split('\n').filter(l => l.trim());
+    const SKIP_FS = new Set([
+      'tmpfs', 'devtmpfs', 'sysfs', 'proc', 'cgroup', 'cgroup2',
+      'securityfs', 'pstore', 'efivarfs', 'bpf', 'debugfs',
+      'tracefs', 'hugetlbfs', 'mqueue', 'fusectl', 'configfs',
+      'overlay', 'squashfs', 'autofs', 'devpts', 'nsfs',
+    ]);
+    const SKIP_MOUNTS = new Set(['/boot', '/boot/efi']);
 
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length < 7) continue;
+    // Helper: get a human-readable label for a mount
+    const getLabel = async (device: string, mountpoint: string): Promise<string> => {
+      // Try blkid label
+      try {
+        const { stdout: lbl } = await execAsync(`blkid -s LABEL -o value ${device} 2>/dev/null`);
+        if (lbl.trim()) return lbl.trim();
+      } catch { /* no label */ }
+      // Fallback smart labels
+      if (mountpoint === '/') return 'System';
+      if (mountpoint === '/data') return 'Data';
+      if (mountpoint.startsWith('/mnt/disks/')) {
+        const name = path.basename(mountpoint);
+        return name.charAt(0).toUpperCase() + name.slice(1);
+      }
+      if (mountpoint.startsWith('/mnt/')) {
+        const name = path.basename(mountpoint);
+        return name.charAt(0).toUpperCase() + name.slice(1);
+      }
+      return path.basename(mountpoint) || device;
+    };
 
-        const device = parts[0];
-        const mountpoint = parts[1];
-        const fstype = parts[2];
-
-        // Skip virtual filesystems
-        if (['tmpfs', 'devtmpfs', 'sysfs', 'proc', 'cgroup', 'cgroup2',
-             'securityfs', 'pstore', 'efivarfs', 'bpf', 'debugfs',
-             'tracefs', 'hugetlbfs', 'mqueue', 'fusectl', 'configfs',
-             'overlay', 'squashfs'].includes(fstype)) continue;
-        if (device.startsWith('none') || device === 'udev') continue;
-
-        // Hide boot and EFI system partitions — users don't need these in the file browser
-        if (['/boot', '/boot/efi'].includes(mountpoint)) continue;
-
-        const parseKB = (s: string) => parseInt(s.replace(/K$/, '')) * 1024 || 0;
-
-        // Get label
-        let label = '';
-        try {
-          const { stdout: lbl } = await execAsync(`blkid -s LABEL -o value ${device} 2>/dev/null`);
-          label = lbl.trim();
-        } catch { /* no label */ }
-
-        // Smart label generation
-        if (!label) {
-          if (mountpoint === '/') label = 'System';
-          else if (mountpoint === '/data') label = 'Data';
-          else if (mountpoint.startsWith('/mnt/disks/')) label = path.basename(mountpoint).charAt(0).toUpperCase() + path.basename(mountpoint).slice(1);
-          else if (mountpoint.startsWith('/mnt/')) label = path.basename(mountpoint).charAt(0).toUpperCase() + path.basename(mountpoint).slice(1);
-          else label = path.basename(mountpoint) || device;
+    // Helper: get size info from df for a mountpoint
+    const getDfInfo = async (mountpoint: string): Promise<{ size: number; used: number; available: number; usePercent: number }> => {
+      try {
+        const { stdout } = await execAsync(`df -B1 "${mountpoint}" 2>/dev/null | tail -1`);
+        const parts = stdout.trim().split(/\s+/);
+        if (parts.length >= 5) {
+          const size = parseInt(parts[1]) || 0;
+          const used = parseInt(parts[2]) || 0;
+          const available = parseInt(parts[3]) || 0;
+          const usePercent = size > 0 ? Math.round((used / size) * 100) : 0;
+          return { size, used, available, usePercent };
         }
+      } catch { /* ignore */ }
+      return { size: 0, used: 0, available: 0, usePercent: 0 };
+    };
 
-        mounts.push({
-          device,
-          mountpoint,
-          fstype,
-          size: parseKB(parts[3]),
-          used: parseKB(parts[4]),
-          available: parseKB(parts[5]),
-          usePercent: parseInt(parts[6].replace('%', '')) || 0,
-          label,
-        });
+    try {
+      // ── Method 1: findmnt (most reliable) ──
+      try {
+        const { stdout: findmntOut } = await execAsync(
+          'findmnt -r -n -o SOURCE,TARGET,FSTYPE 2>/dev/null'
+        );
+        for (const line of findmntOut.trim().split('\n')) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length < 3) continue;
+          const [device, mountpoint, fstype] = parts;
+          if (SKIP_FS.has(fstype)) continue;
+          if (SKIP_MOUNTS.has(mountpoint)) continue;
+          if (device.startsWith('none') || device === 'udev') continue;
+          // Only include real block devices and /data, /mnt paths, /
+          if (!device.startsWith('/dev/')) continue;
+
+          const dfInfo = await getDfInfo(mountpoint);
+          const label = await getLabel(device, mountpoint);
+
+          mountMap.set(mountpoint, {
+            device, mountpoint, fstype,
+            size: dfInfo.size,
+            used: dfInfo.used,
+            available: dfInfo.available,
+            usePercent: dfInfo.usePercent,
+            label,
+          });
+        }
+      } catch {
+        this.logger.warn('FILES', 'findmnt failed, falling back to df');
       }
 
-      // Sort: /data and /mnt drives first, then system (/)
-      mounts.sort((a, b) => {
-        const priority = (m: DiskMount) => {
-          if (m.mountpoint.startsWith('/mnt/disks/')) return 0;
-          if (m.mountpoint === '/data') return 1;
-          if (m.mountpoint.startsWith('/mnt/')) return 2;
-          if (m.mountpoint === '/') return 3;
-          return 4;
-        };
-        return priority(a) - priority(b);
-      });
+      // ── Method 2: df fallback (adds anything findmnt missed) ──
+      try {
+        const { stdout: dfOut } = await execAsync(
+          "df -BK --output=source,target,fstype,size,used,avail,pcent 2>/dev/null | tail -n +2"
+        );
+        const parseKB = (s: string) => parseInt(s.replace(/K$/, '')) * 1024 || 0;
+        for (const line of dfOut.trim().split('\n')) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length < 7) continue;
+          const [device, mountpoint, fstype] = parts;
+          if (SKIP_FS.has(fstype)) continue;
+          if (SKIP_MOUNTS.has(mountpoint)) continue;
+          if (device.startsWith('none') || device === 'udev') continue;
+          if (mountMap.has(mountpoint)) continue; // already found by findmnt
 
-      return mounts;
+          const label = await getLabel(device, mountpoint);
+          mountMap.set(mountpoint, {
+            device, mountpoint, fstype,
+            size: parseKB(parts[3]),
+            used: parseKB(parts[4]),
+            available: parseKB(parts[5]),
+            usePercent: parseInt(parts[6].replace('%', '')) || 0,
+            label,
+          });
+        }
+      } catch { /* ignore */ }
+
+      // ── Method 3: scan /mnt/disks/* directly (catch array drives) ──
+      try {
+        const disksDir = '/mnt/disks';
+        if (fs.existsSync(disksDir)) {
+          const entries = fs.readdirSync(disksDir);
+          for (const entry of entries) {
+            const mp = path.join(disksDir, entry);
+            if (mountMap.has(mp)) continue; // already found
+            try {
+              const stat = fs.statSync(mp);
+              if (!stat.isDirectory()) continue;
+              // Check if it's actually a mountpoint
+              const { stdout: src } = await execAsync(`findmnt -n -o SOURCE,FSTYPE "${mp}" 2>/dev/null`);
+              if (!src.trim()) continue;
+              const [device, fstype] = src.trim().split(/\s+/);
+              const dfInfo = await getDfInfo(mp);
+              const label = await getLabel(device || '', mp);
+              mountMap.set(mp, {
+                device: device || 'unknown',
+                mountpoint: mp,
+                fstype: fstype || 'unknown',
+                size: dfInfo.size,
+                used: dfInfo.used,
+                available: dfInfo.available,
+                usePercent: dfInfo.usePercent,
+                label,
+              });
+            } catch { /* not a mountpoint */ }
+          }
+        }
+      } catch { /* ignore */ }
+
     } catch (error) {
       this.logger.error('FILES', `Failed to get mounts: ${error}`);
-      return [];
     }
+
+    // Convert to array and sort
+    const mounts = Array.from(mountMap.values());
+    mounts.sort((a, b) => {
+      const priority = (m: DiskMount) => {
+        if (m.mountpoint.startsWith('/mnt/disks/')) return 0;
+        if (m.mountpoint === '/data') return 1;
+        if (m.mountpoint.startsWith('/mnt/')) return 2;
+        if (m.mountpoint === '/') return 3;
+        return 4;
+      };
+      return priority(a) - priority(b);
+    });
+
+    return mounts;
   }
 
   /**
