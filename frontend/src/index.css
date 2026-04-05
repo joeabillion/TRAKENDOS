@@ -47,6 +47,13 @@ body {
   display: flex;
 }
 
+/* Force all page content to fill full width and height */
+main, main > *, main > * > * {
+  width: 100%;
+  flex: 1;
+  min-width: 0;
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
