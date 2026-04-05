@@ -341,13 +341,15 @@ const start = async () => {
       totalMemory: overview.memory.total,
     });
 
-    // Auto-start array on boot if it was previously running or auto_start is enabled
+    // Auto-start array on boot if auto_start is enabled
+    // After a crash, the state could be anything (starting, running, error, degraded)
+    // Always attempt if auto_start is true — startArray() will mount drives + start Docker
     try {
       const arrayConfig = arrayService.getArrayConfig();
-      if (arrayConfig.auto_start && arrayConfig.state !== 'stopped') {
+      if (arrayConfig.auto_start) {
+        logger.info('SYSTEM', `Auto-starting array (previous state: ${arrayConfig.state})...`);
         // Reset state so startArray() doesn't reject with "already running"
         arrayConfig.state = 'stopped';
-        logger.info('SYSTEM', 'Auto-starting array (was previously running)...');
         await arrayService.startArray();
         logger.info('SYSTEM', 'Array auto-started successfully');
       }
