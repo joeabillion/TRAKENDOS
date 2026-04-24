@@ -716,7 +716,7 @@ const DriveRow: React.FC<{
             {drive.rpm > 0 ? <span>{drive.rpm} RPM</span> : <span>SSD</span>}
             {drive.temperature > 0 && (
               <span className={drive.temperature > 50 ? 'text-orange-400' : ''}>
-                <ThermometerSun className="w-3 h-3 inline mr-0.5" />{drive.temperature}°C
+                <ThermometerSun className="w-3 h-3 inline mr-0.5" />{Math.round(drive.temperature * 9 / 5 + 32)}°F
               </span>
             )}
           </div>
@@ -787,7 +787,7 @@ const DriveRow: React.FC<{
             <div>
               <div className="text-trakend-text-secondary">Temperature</div>
               <div className={`${drive.temperature > 50 ? 'text-orange-400' : drive.temperature > 40 ? 'text-yellow-400' : 'text-trakend-text-primary'}`}>
-                {drive.temperature > 0 ? `${drive.temperature}°C` : 'N/A'}
+                {drive.temperature > 0 ? `${Math.round(drive.temperature * 9 / 5 + 32)}°F` : 'N/A'}
               </div>
             </div>
           </div>

@@ -46,7 +46,7 @@ export const GpuWidget: React.FC = () => {
                 <div className="text-center">
                   <div className="text-[10px] text-trakend-text-secondary uppercase">Temp</div>
                   <div className={`text-sm font-bold ${gpu.temperature > 80 ? 'text-trakend-error' : gpu.temperature > 60 ? 'text-trakend-warning' : 'text-trakend-accent'}`}>
-                    {gpu.temperature > 0 ? `${gpu.temperature}°C` : '--'}
+                    {gpu.temperature > 0 ? `${Math.round(gpu.temperature * 9 / 5 + 32)}°F` : '--'}
                   </div>
                 </div>
                 <div className="text-center">

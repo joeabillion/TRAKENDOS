@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import {
-  FolderOpen, File, HardDrive, ChevronRight, ChevronDown,
-  ArrowUp, RefreshCw, Search, Plus, Trash2, Copy, Scissors,
-  Edit3, Download, Eye, FolderPlus, FilePlus, MoreVertical,
-  Home, Grid, List, Filter, X, AlertCircle, Check, Lock,
+  FolderOpen, File, HardDrive, ChevronRight,
+  ArrowUp, RefreshCw, Search, Trash2, Copy, Scissors,
+  Edit3, Eye, FolderPlus, FilePlus, MoreVertical,
+  Grid, List, Filter, X, AlertCircle, Check, Lock,
   Database, Shield, Zap, Server
 } from 'lucide-react'
 import api from '../../utils/api'
@@ -35,17 +35,6 @@ interface DirectoryListing {
   totalFiles: number
   totalDirs: number
   totalSize: number
-}
-
-interface DiskMount {
-  device: string
-  mountpoint: string
-  fstype: string
-  size: number
-  used: number
-  available: number
-  usePercent: number
-  label: string
 }
 
 interface PhysicalDrive {
@@ -109,16 +98,13 @@ function getFileIcon(entry: FileEntry): React.ReactNode {
 export const FileBrowserPage: React.FC = () => {
   const [currentPath, setCurrentPath] = useState('/')
   const [listing, setListing] = useState<DirectoryListing | null>(null)
-  const [mounts, setMounts] = useState<DiskMount[]>([])
   const [allDrives, setAllDrives] = useState<PhysicalDrive[]>([])
-  const [showDriveOverview, setShowDriveOverview] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
   const [showHidden, setShowHidden] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<any[] | null>(null)
-  const [searchLoading, setSearchLoading] = useState(false)
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
   const [clipboard, setClipboard] = useState<{ paths: string[]; action: 'copy' | 'cut' } | null>(null)
   const [showPreview, setShowPreview] = useState<{ path: string; content: string; size: number } | null>(null)
@@ -147,13 +133,6 @@ export const FileBrowserPage: React.FC = () => {
     }
   }, [showHidden])
 
-  const loadMounts = useCallback(async () => {
-    try {
-      const res = await api.get('/files/mounts')
-      setMounts(res.data)
-    } catch { /* ignore */ }
-  }, [])
-
   const loadDrives = useCallback(async () => {
     try {
       const res = await api.get('/array/drives')
@@ -174,51 +153,7 @@ export const FileBrowserPage: React.FC = () => {
     return drive.model || drive.device
   }
 
-  // Get array label for a mount based on mountpoint (for sidebar)
-  const getArrayLabel = (mount: DiskMount): { label: string; role: string } => {
-    // Try to find matching physical drive
-    const matchedDrive = allDrives.find(d => d.mount_point === mount.mountpoint || d.device === mount.device)
-    if (matchedDrive) {
-      return { label: getDriveLabel(matchedDrive), role: matchedDrive.role }
-    }
-    const mp = mount.mountpoint
-    if (mp === '/mnt/disks/cache') return { label: 'Cache', role: 'cache' }
-    const diskMatch = mp.match(/\/mnt\/disks\/disk(\d+)/)
-    if (diskMatch) return { label: `Disk ${diskMatch[1]}`, role: 'data' }
-    if (mp === '/data') return { label: 'Data', role: 'unassigned' }
-    if (mp === '/') return { label: 'System', role: 'unassigned' }
-    return { label: mount.label || mp.split('/').pop() || mp, role: 'unassigned' }
-  }
-
-  const getRoleIcon = (role: string) => {
-    switch (role) {
-      case 'parity': return <Shield size={24} className="text-yellow-400" />
-      case 'cache': return <Zap size={24} className="text-purple-400" />
-      case 'data': return <Database size={24} className="text-trakend-accent" />
-      default: return <HardDrive size={24} className="text-trakend-text-secondary" />
-    }
-  }
-
-  const getRoleColor = (role: string) => {
-    switch (role) {
-      case 'parity': return 'border-yellow-500/30 hover:border-yellow-500/60'
-      case 'cache': return 'border-purple-500/30 hover:border-purple-500/60'
-      case 'data': return 'border-trakend-accent/30 hover:border-trakend-accent/60'
-      default: return 'border-trakend-border hover:border-trakend-text-secondary/50'
-    }
-  }
-
-  const getRoleBadgeColor = (role: string) => {
-    switch (role) {
-      case 'parity': return 'bg-yellow-900/30 text-yellow-400 border-yellow-700/30'
-      case 'cache': return 'bg-purple-900/30 text-purple-400 border-purple-700/30'
-      case 'data': return 'bg-trakend-accent/10 text-trakend-accent border-trakend-accent/30'
-      default: return 'bg-trakend-surface text-trakend-text-secondary border-trakend-border'
-    }
-  }
-
   useEffect(() => {
-    loadMounts()
     loadDrives()
   }, [])
 
@@ -229,16 +164,7 @@ export const FileBrowserPage: React.FC = () => {
   // ── Navigation ──
 
   const navigate = (path: string) => {
-    setShowDriveOverview(false)
     loadDirectory(path)
-  }
-
-  const goToDriveOverview = () => {
-    setShowDriveOverview(true)
-    setListing(null)
-    setError('')
-    loadMounts()
-    loadDrives()
   }
 
   const goUp = () => {
@@ -251,12 +177,10 @@ export const FileBrowserPage: React.FC = () => {
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) { setSearchResults(null); return }
-    setSearchLoading(true)
     try {
       const res = await api.get('/files/search', { params: { path: currentPath, query: searchQuery } })
       setSearchResults(res.data)
     } catch { /* ignore */ }
-    setSearchLoading(false)
   }
 
   // ── File operations ──
@@ -473,12 +397,9 @@ export const FileBrowserPage: React.FC = () => {
       {/* Toolbar */}
       <div className="bg-trakend-surface border-b border-trakend-border px-4 py-3 flex items-center gap-3 flex-shrink-0">
         {/* Navigation */}
-        <button onClick={showDriveOverview ? undefined : goUp} disabled={showDriveOverview || !listing?.parent}
+        <button onClick={goUp} disabled={!listing?.parent}
           className="p-2 rounded hover:bg-trakend-surface-light disabled:opacity-30 text-trakend-text-secondary">
           <ArrowUp size={18} />
-        </button>
-        <button onClick={goToDriveOverview} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary" title="Drives Overview">
-          <HardDrive size={18} />
         </button>
         <button onClick={() => loadDirectory(currentPath)} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary">
           <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
@@ -486,8 +407,8 @@ export const FileBrowserPage: React.FC = () => {
 
         {/* Breadcrumb */}
         <div className="flex items-center gap-1 flex-1 overflow-x-auto text-sm">
-          <button onClick={goToDriveOverview} className="text-trakend-text-secondary hover:text-trakend-accent font-medium">Drives</button>
-          {!showDriveOverview && breadcrumbs.map((seg, i) => {
+          <span className="text-trakend-text-secondary font-medium">Drives</span>
+          {breadcrumbs.map((seg, i) => {
             const fullPath = '/' + breadcrumbs.slice(0, i + 1).join('/')
             return (
               <React.Fragment key={i}>
@@ -571,204 +492,106 @@ export const FileBrowserPage: React.FC = () => {
 
       {/* Main area */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Drive sidebar — hidden during drive overview */}
-        {!showDriveOverview && (
-          <div className="w-56 bg-trakend-surface border-r border-trakend-border overflow-y-auto flex-shrink-0">
-            <div className="p-3 text-xs font-semibold text-trakend-text-secondary uppercase tracking-wider cursor-pointer hover:text-trakend-accent" onClick={goToDriveOverview}>← All Drives</div>
-            {mounts.filter(m => m.mountpoint !== '/' && m.mountpoint !== '/boot' && m.mountpoint !== '/boot/efi').map((m, i) => {
-              const info = getArrayLabel(m)
-              return (
-                <button
-                  key={i}
-                  onClick={() => navigate(m.mountpoint)}
-                  onDragOver={e => handleDragOver(e, m.mountpoint)}
-                  onDragLeave={handleDragLeave}
-                  onDrop={e => handleDrop(e, m.mountpoint)}
-                  className={clsx(
-                    'w-full text-left px-3 py-2.5 hover:bg-trakend-surface-light border-b border-trakend-border/50',
-                    currentPath.startsWith(m.mountpoint) && 'bg-trakend-surface-light',
-                    dropTarget === m.mountpoint && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <HardDrive size={16} className="text-trakend-accent flex-shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm text-trakend-text-primary truncate">{info.label}</div>
-                      <div className="text-xs text-trakend-text-secondary truncate">{m.mountpoint}</div>
-                      <div className="mt-1 h-1.5 bg-trakend-dark rounded-full overflow-hidden">
-                        <div
-                          className={clsx('h-full rounded-full', m.usePercent > 90 ? 'bg-trakend-error' : m.usePercent > 70 ? 'bg-trakend-warning' : 'bg-trakend-accent')}
-                          style={{ width: `${m.usePercent}%` }}
-                        />
-                      </div>
-                      <div className="text-xs text-trakend-text-secondary mt-0.5">
-                        {formatSize(m.used)} / {formatSize(m.size)}
-                      </div>
-                    </div>
-                  </div>
-                </button>
-              )
-            })}
-            {/* Quick links */}
-            <div className="p-3 text-xs font-semibold text-trakend-text-secondary uppercase tracking-wider mt-2">Quick Access</div>
-            {['/', '/data', '/data/shares', '/data/backups', '/mnt/disks', '/tmp'].map(p => (
-              <button key={p} onClick={() => navigate(p)}
-                onDragOver={e => handleDragOver(e, p)}
-                onDragLeave={handleDragLeave}
-                onDrop={e => handleDrop(e, p)}
-                className={clsx(
-                  'w-full text-left px-3 py-2 text-sm text-trakend-text-secondary hover:bg-trakend-surface-light hover:text-trakend-text-primary',
-                  dropTarget === p && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
-                )}>
-                {p}
-              </button>
-            ))}
+        {/* Drive tree sidebar — always visible */}
+        <div className="w-64 bg-trakend-surface border-r border-trakend-border overflow-y-auto flex-shrink-0">
+          <div className="p-3 text-xs font-semibold text-trakend-text-secondary uppercase tracking-wider flex items-center gap-2">
+            <Server size={14} /> Array Drives
           </div>
-        )}
 
-        {/* Drive Overview Landing Page */}
-        {showDriveOverview ? (
-          <div className="flex-1 overflow-auto p-6">
-            <div className="mb-6">
-              <h2 className="text-xl font-bold text-trakend-text-primary flex items-center gap-3">
-                <Server size={24} className="text-trakend-accent" />
-                All Drives
-              </h2>
-              <p className="text-sm text-trakend-text-secondary mt-1">
-                {allDrives.length} drive(s) detected. Click a mounted drive to browse files.
-              </p>
-            </div>
+          {/* Array-assigned drives only */}
+          {(() => {
+            const assignedDrives = allDrives.filter(d => d.role === 'parity' || d.role === 'parity2' || d.role === 'data' || d.role === 'cache')
+            const parityDrives = assignedDrives.filter(d => d.role === 'parity' || d.role === 'parity2')
+            const dataDrives = assignedDrives.filter(d => d.role === 'data').sort((a: PhysicalDrive, b: PhysicalDrive) => (a.slot || 0) - (b.slot || 0))
+            const cacheDrives = assignedDrives.filter(d => d.role === 'cache')
+            const groups: { label: string; drives: PhysicalDrive[]; icon: React.ReactNode }[] = []
+            if (parityDrives.length > 0) groups.push({ label: 'Parity', drives: parityDrives, icon: <Shield size={14} className="text-yellow-400" /> })
+            if (dataDrives.length > 0) groups.push({ label: 'Data', drives: dataDrives, icon: <Database size={14} className="text-trakend-accent" /> })
+            if (cacheDrives.length > 0) groups.push({ label: 'Cache', drives: cacheDrives, icon: <Zap size={14} className="text-purple-400" /> })
 
-            {/* Assigned / Array Drives */}
-            {(() => {
-              // Hide root/boot system partitions — keep /data since it's usable storage
-              const HIDDEN_MOUNTS = new Set(['/', '/boot', '/boot/efi'])
-              const visibleDrives = allDrives.filter(d => !d.mount_point || !HIDDEN_MOUNTS.has(d.mount_point))
-              const parityDrives = visibleDrives.filter(d => d.role === 'parity' || d.role === 'parity2')
-              const dataDrives = visibleDrives.filter(d => d.role === 'data').sort((a, b) => (a.slot || 0) - (b.slot || 0))
-              const cacheDrives = visibleDrives.filter(d => d.role === 'cache')
-              const unassignedDrives = visibleDrives.filter(d => d.role === 'unassigned' || d.role === 'hot_spare')
-              const orderedDrives = [...parityDrives, ...dataDrives, ...cacheDrives, ...unassignedDrives]
-
-              return (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {orderedDrives.map((drive) => {
-                    const label = getDriveLabel(drive)
-                    const isMounted = !!drive.mount_point
-                    const usagePercent = drive.size_bytes > 0 && drive.usage_bytes
-                      ? Math.round((drive.usage_bytes / drive.size_bytes) * 100) : 0
-                    const freeBytes = drive.size_bytes - (drive.usage_bytes || 0)
-
-                    return (
-                      <button
-                        key={drive.id}
-                        onClick={() => isMounted && drive.mount_point ? navigate(drive.mount_point) : undefined}
-                        disabled={!isMounted}
-                        onDragOver={isMounted && drive.mount_point ? (e => handleDragOver(e, drive.mount_point!)) : undefined}
-                        onDragLeave={isMounted ? handleDragLeave : undefined}
-                        onDrop={isMounted && drive.mount_point ? (e => handleDrop(e, drive.mount_point!)) : undefined}
-                        className={clsx(
-                          'text-left bg-trakend-surface rounded-xl border-2 p-5 transition-all duration-200 group',
-                          isMounted ? 'hover:shadow-lg hover:shadow-black/20 cursor-pointer' : 'opacity-60 cursor-default',
-                          getRoleColor(drive.role),
-                          isMounted && drive.mount_point && dropTarget === drive.mount_point && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
-                        )}
-                      >
-                        {/* Header */}
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="p-2.5 rounded-lg bg-trakend-dark">
-                            {getRoleIcon(drive.role)}
-                          </div>
-                          <div className="flex flex-col items-end gap-1">
-                            <span className={clsx('text-xs font-medium px-2 py-0.5 rounded-full border', getRoleBadgeColor(drive.role))}>
-                              {drive.role === 'data' ? 'Data' : drive.role === 'parity' ? 'Parity' : drive.role === 'parity2' ? 'Parity 2' : drive.role === 'cache' ? 'Cache' : drive.role === 'hot_spare' ? 'Hot Spare' : 'Unassigned'}
-                            </span>
-                            {!isMounted && (
-                              <span className="text-xs px-2 py-0.5 rounded-full bg-red-900/30 text-red-400 border border-red-700/30">Not Mounted</span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Name + device info */}
-                        <h3 className={clsx('text-lg font-bold transition-colors', isMounted ? 'text-trakend-text-primary group-hover:text-trakend-accent' : 'text-trakend-text-secondary')}>
-                          {label}
-                        </h3>
-                        <div className="text-xs text-trakend-text-secondary mt-0.5 truncate" title={drive.model}>
-                          {drive.model}
-                        </div>
-                        <div className="text-xs text-trakend-text-secondary font-mono truncate mt-0.5">
-                          {drive.device}{drive.mount_point ? ` → ${drive.mount_point}` : ''}
-                        </div>
-
-                        {/* Usage bar (only for mounted drives with usage data) */}
-                        {isMounted && drive.usage_bytes !== undefined ? (
-                          <div className="mt-3">
-                            <div className="flex justify-between text-xs text-trakend-text-secondary mb-1">
-                              <span>{formatSize(drive.usage_bytes)} used</span>
-                              <span>{formatSize(freeBytes > 0 ? freeBytes : 0)} free</span>
-                            </div>
-                            <div className="h-2 bg-trakend-dark rounded-full overflow-hidden">
-                              <div
-                                className={clsx(
-                                  'h-full rounded-full transition-all duration-500',
-                                  usagePercent > 90 ? 'bg-trakend-error' : usagePercent > 70 ? 'bg-trakend-warning' : 'bg-trakend-accent'
-                                )}
-                                style={{ width: `${usagePercent}%` }}
-                              />
-                            </div>
-                            <div className="flex justify-between text-xs mt-1">
-                              <span className="text-trakend-text-secondary">{drive.filesystem?.toUpperCase() || '?'}</span>
-                              <span className={clsx('font-semibold', usagePercent > 90 ? 'text-trakend-error' : usagePercent > 70 ? 'text-trakend-warning' : 'text-trakend-accent')}>
-                                {usagePercent}%
-                              </span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="mt-3 text-xs text-trakend-text-secondary">
-                            {drive.filesystem ? drive.filesystem.toUpperCase() : 'No filesystem'} • {drive.size_human}
-                          </div>
-                        )}
-
-                        {/* Footer: health + temp */}
-                        <div className="mt-3 pt-2 border-t border-trakend-border/50 flex items-center justify-between">
-                          <span className={clsx('text-xs font-medium px-1.5 py-0.5 rounded',
-                            drive.health === 'healthy' ? 'bg-green-500/20 text-green-400' :
-                            drive.health === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
-                            drive.health === 'failing' || drive.health === 'failed' ? 'bg-red-500/20 text-red-400' :
-                            'bg-gray-500/20 text-gray-400'
-                          )}>
-                            {drive.health.toUpperCase()}
-                          </span>
-                          <div className="flex items-center gap-2 text-xs text-trakend-text-secondary">
-                            {drive.temperature > 0 && (
-                              <span className={drive.temperature > 50 ? 'text-orange-400' : ''}>{drive.temperature}°C</span>
-                            )}
-                            <span>{drive.transport.toUpperCase()}</span>
-                            <span>{drive.rpm > 0 ? `${drive.rpm} RPM` : 'SSD'}</span>
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  })}
+            return groups.map(group => (
+              <div key={group.label}>
+                <div className="px-3 py-1.5 text-[10px] font-bold text-trakend-text-secondary uppercase tracking-widest flex items-center gap-1.5 border-b border-trakend-border/30">
+                  {group.icon} {group.label}
                 </div>
-              )
-            })()}
+                {group.drives.map(drive => {
+                  const label = getDriveLabel(drive)
+                  const isMounted = !!drive.mount_point
+                  const usagePercent = drive.size_bytes > 0 && drive.usage_bytes
+                    ? Math.round((drive.usage_bytes / drive.size_bytes) * 100) : 0
+                  const isActive = isMounted && drive.mount_point && currentPath.startsWith(drive.mount_point)
 
-            {/* Quick access section */}
-            <div className="mt-8">
-              <h3 className="text-sm font-semibold text-trakend-text-secondary uppercase tracking-wider mb-3">Quick Access</h3>
-              <div className="flex flex-wrap gap-2">
-                {['/data', '/data/shares', '/data/backups', '/mnt/disks', '/tmp'].map(p => (
-                  <button key={p} onClick={() => navigate(p)}
-                    className="px-4 py-2 rounded-lg bg-trakend-surface border border-trakend-border text-sm text-trakend-text-secondary hover:text-trakend-text-primary hover:border-trakend-accent/50 transition-colors">
-                    {p}
-                  </button>
-                ))}
+                  return (
+                    <button
+                      key={drive.id}
+                      onClick={() => isMounted && drive.mount_point ? navigate(drive.mount_point) : undefined}
+                      disabled={!isMounted}
+                      onDragOver={isMounted && drive.mount_point ? (e: React.DragEvent) => handleDragOver(e, drive.mount_point!) : undefined}
+                      onDragLeave={isMounted ? handleDragLeave : undefined}
+                      onDrop={isMounted && drive.mount_point ? (e: React.DragEvent) => handleDrop(e, drive.mount_point!) : undefined}
+                      className={clsx(
+                        'w-full text-left px-3 py-2 border-b border-trakend-border/20 transition-colors',
+                        isMounted ? 'hover:bg-trakend-surface-light cursor-pointer' : 'opacity-50 cursor-default',
+                        isActive && 'bg-trakend-accent/10 border-l-2 border-l-trakend-accent',
+                        isMounted && drive.mount_point && dropTarget === drive.mount_point && 'ring-1 ring-trakend-accent bg-trakend-accent/10'
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <HardDrive size={14} className={clsx('flex-shrink-0', isActive ? 'text-trakend-accent' : 'text-trakend-text-secondary')} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between">
+                            <span className={clsx('text-sm font-medium truncate', isActive ? 'text-trakend-accent' : 'text-trakend-text-primary')}>{label}</span>
+                            <span className={clsx('text-[10px] font-medium px-1 rounded',
+                              drive.health === 'healthy' ? 'text-green-400' :
+                              drive.health === 'warning' ? 'text-yellow-400' :
+                              'text-red-400'
+                            )}>
+                              {drive.health === 'healthy' ? 'OK' : drive.health.toUpperCase()}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-trakend-text-secondary truncate">{drive.device} • {drive.size_human}</div>
+                          {isMounted && drive.usage_bytes !== undefined && (
+                            <div className="mt-1">
+                              <div className="h-1 bg-trakend-dark rounded-full overflow-hidden">
+                                <div
+                                  className={clsx('h-full rounded-full', usagePercent > 90 ? 'bg-trakend-error' : usagePercent > 70 ? 'bg-trakend-warning' : 'bg-trakend-accent')}
+                                  style={{ width: `${usagePercent}%` }}
+                                />
+                              </div>
+                              <div className="text-[10px] text-trakend-text-secondary mt-0.5">{usagePercent}% used</div>
+                            </div>
+                          )}
+                          {!isMounted && <div className="text-[10px] text-red-400 mt-0.5">Not Mounted</div>}
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
               </div>
-            </div>
+            ))
+          })()}
+
+          {/* Quick links */}
+          <div className="px-3 py-1.5 mt-2 text-[10px] font-bold text-trakend-text-secondary uppercase tracking-widest border-b border-trakend-border/30 flex items-center gap-1.5">
+            <FolderOpen size={14} className="text-trakend-text-secondary" /> Quick Access
           </div>
-        ) : (
-        /* File list */
+          {['/', '/data', '/data/shares', '/data/backups', '/mnt/disks', '/tmp'].map(p => (
+            <button key={p} onClick={() => navigate(p)}
+              onDragOver={(e: React.DragEvent) => handleDragOver(e, p)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e: React.DragEvent) => handleDrop(e, p)}
+              className={clsx(
+                'w-full text-left px-3 py-1.5 text-xs text-trakend-text-secondary hover:bg-trakend-surface-light hover:text-trakend-text-primary flex items-center gap-2',
+                currentPath === p && 'bg-trakend-surface-light text-trakend-text-primary',
+                dropTarget === p && 'ring-1 ring-trakend-accent bg-trakend-accent/10'
+              )}>
+              <ChevronRight size={10} className="text-trakend-text-secondary" />
+              {p}
+            </button>
+          ))}
+        </div>
+
+        {/* File list — right panel */}
         <div className="flex-1 overflow-auto">
           {error && (
             <div className="m-4 p-3 rounded-lg bg-red-900/20 border border-trakend-error/30 text-trakend-error text-sm flex items-center gap-2">
@@ -783,7 +606,7 @@ export const FileBrowserPage: React.FC = () => {
                 {searchResults.length} result(s) for "{searchQuery}"
                 <button onClick={() => setSearchResults(null)} className="ml-2 text-trakend-accent hover:underline">Clear</button>
               </div>
-              {searchResults.map((r, i) => (
+              {searchResults.map((r: any, i: number) => (
                 <button key={i}
                   onClick={() => r.type === 'directory' ? navigate(r.path) : handlePreview(r.path)}
                   className="w-full text-left flex items-center gap-3 px-3 py-2 rounded hover:bg-trakend-surface-light">
@@ -795,6 +618,12 @@ export const FileBrowserPage: React.FC = () => {
                   <span className="text-xs text-trakend-text-secondary">{formatSize(r.size)}</span>
                 </button>
               ))}
+            </div>
+          ) : !listing && !loading ? (
+            <div className="flex flex-col items-center justify-center h-full text-trakend-text-secondary">
+              <HardDrive size={48} className="mb-4 opacity-20" />
+              <span className="text-sm font-medium">Select a drive to browse</span>
+              <span className="text-xs mt-1 opacity-60">Choose a drive from the sidebar or use Quick Access</span>
             </div>
           ) : listing && (
             <>
@@ -878,11 +707,13 @@ export const FileBrowserPage: React.FC = () => {
                               <span className={clsx(
                                 'text-sm',
                                 entry.type === 'directory' ? 'text-trakend-accent font-medium' : 'text-trakend-text-primary',
-                                entry.hidden && 'opacity-60'
+                                entry.hidden && 'opacity-60',
+                                entry.protected && 'opacity-50'
                               )}>
                                 {entry.name}
                               </span>
                               {entry.type === 'symlink' && <span className="text-xs text-trakend-text-secondary">(link)</span>}
+                              {entry.protected && <Lock size={12} className="text-gray-500 flex-shrink-0" title="Protected system file" />}
                             </div>
                           )}
                         </td>
@@ -947,7 +778,6 @@ export const FileBrowserPage: React.FC = () => {
             </>
           )}
         </div>
-        )}
       </div>
 
       {/* Context Menu */}
@@ -968,14 +798,16 @@ export const FileBrowserPage: React.FC = () => {
               <Eye size={14} /> Preview
             </button>
           )}
-          <button onClick={() => {
-            setRenameTarget(contextMenu.entry.path)
-            setRenameValue(contextMenu.entry.name)
-            setContextMenu(null)
-          }}
-            className="w-full text-left px-4 py-2 text-sm text-trakend-text-primary hover:bg-trakend-surface-light flex items-center gap-2">
-            <Edit3 size={14} /> Rename
-          </button>
+          {!contextMenu.entry.protected && (
+            <button onClick={() => {
+              setRenameTarget(contextMenu.entry.path)
+              setRenameValue(contextMenu.entry.name)
+              setContextMenu(null)
+            }}
+              className="w-full text-left px-4 py-2 text-sm text-trakend-text-primary hover:bg-trakend-surface-light flex items-center gap-2">
+              <Edit3 size={14} /> Rename
+            </button>
+          )}
           <button onClick={() => {
             setClipboard({ paths: [contextMenu.entry.path], action: 'copy' })
             notify('Copied')
@@ -984,22 +816,35 @@ export const FileBrowserPage: React.FC = () => {
             className="w-full text-left px-4 py-2 text-sm text-trakend-text-primary hover:bg-trakend-surface-light flex items-center gap-2">
             <Copy size={14} /> Copy
           </button>
-          <button onClick={() => {
-            setClipboard({ paths: [contextMenu.entry.path], action: 'cut' })
-            notify('Cut')
-            setContextMenu(null)
-          }}
-            className="w-full text-left px-4 py-2 text-sm text-trakend-text-primary hover:bg-trakend-surface-light flex items-center gap-2">
-            <Scissors size={14} /> Cut
-          </button>
-          <div className="border-t border-trakend-border my-1" />
-          <button onClick={() => {
-            handleDelete([contextMenu.entry.path])
-            setContextMenu(null)
-          }}
-            className="w-full text-left px-4 py-2 text-sm text-trakend-error hover:bg-red-900/20 flex items-center gap-2">
-            <Trash2 size={14} /> Delete
-          </button>
+          {!contextMenu.entry.protected && (
+            <button onClick={() => {
+              setClipboard({ paths: [contextMenu.entry.path], action: 'cut' })
+              notify('Cut')
+              setContextMenu(null)
+            }}
+              className="w-full text-left px-4 py-2 text-sm text-trakend-text-primary hover:bg-trakend-surface-light flex items-center gap-2">
+              <Scissors size={14} /> Cut
+            </button>
+          )}
+          {!contextMenu.entry.protected ? (
+            <>
+              <div className="border-t border-trakend-border my-1" />
+              <button onClick={() => {
+                handleDelete([contextMenu.entry.path])
+                setContextMenu(null)
+              }}
+                className="w-full text-left px-4 py-2 text-sm text-trakend-error hover:bg-red-900/20 flex items-center gap-2">
+                <Trash2 size={14} /> Delete
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="border-t border-trakend-border my-1" />
+              <div className="px-4 py-2 text-xs text-gray-500 flex items-center gap-2">
+                <Lock size={12} /> Protected system file
+              </div>
+            </>
+          )}
         </div>
       )}
 

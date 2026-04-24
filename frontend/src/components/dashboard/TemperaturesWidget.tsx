@@ -8,6 +8,8 @@ export const TemperaturesWidget: React.FC = () => {
   const tempSensors = temps?.sensors?.filter(s => s.type === 'temp') || []
   const voltageSensors = temps?.sensors?.filter(s => s.type === 'voltage') || []
 
+  const toF = (c: number) => Math.round(c * 9 / 5 + 32)
+
   const getTempColor = (val: number) => {
     if (val > 85) return 'text-trakend-error'
     if (val > 70) return 'text-trakend-warning'
@@ -25,7 +27,7 @@ export const TemperaturesWidget: React.FC = () => {
         <div className="mb-4">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-trakend-text-secondary">CPU</span>
-            <span className={`text-sm font-bold ${getTempColor(temps.cpu)}`}>{temps.cpu.toFixed(0)}°C</span>
+            <span className={`text-sm font-bold ${getTempColor(temps.cpu)}`}>{toF(temps.cpu)}°F</span>
           </div>
           <div className="h-2 bg-trakend-dark rounded-full overflow-hidden">
             <div className={`h-full rounded-full transition-all ${temps.cpu > 85 ? 'bg-trakend-error' : temps.cpu > 70 ? 'bg-trakend-warning' : 'bg-trakend-success'}`}
@@ -36,7 +38,7 @@ export const TemperaturesWidget: React.FC = () => {
               {temps.cpuCores.map((core, i) => (
                 <div key={i} className="text-center">
                   <div className="text-[10px] text-trakend-text-secondary">C{i}</div>
-                  <div className={`text-xs font-medium ${getTempColor(core)}`}>{core.toFixed(0)}°</div>
+                  <div className={`text-xs font-medium ${getTempColor(core)}`}>{toF(core)}°</div>
                 </div>
               ))}
             </div>
@@ -51,7 +53,7 @@ export const TemperaturesWidget: React.FC = () => {
           {tempSensors.map((s, i) => (
             <div key={i} className="flex items-center justify-between py-1 border-b border-trakend-border/30">
               <span className="text-xs text-trakend-text-secondary truncate max-w-[60%]">{s.label} <span className="opacity-50">({s.chip})</span></span>
-              <span className={`text-xs font-medium ${getTempColor(s.value)}`}>{s.value.toFixed(1)}{s.unit}</span>
+              <span className={`text-xs font-medium ${getTempColor(s.value)}`}>{s.unit === '°C' ? `${toF(s.value)}°F` : `${s.value.toFixed(1)}${s.unit}`}</span>
             </div>
           ))}
         </div>

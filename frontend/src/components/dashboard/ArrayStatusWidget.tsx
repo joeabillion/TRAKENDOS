@@ -144,7 +144,7 @@ export const ArrayStatusWidget: React.FC = () => {
                     <span className="text-trakend-text-primary flex-1 truncate">{d.device}</span>
                     <span className="text-trakend-text-secondary">{d.role}</span>
                     <span className="text-trakend-text-secondary">{formatBytes(d.size_bytes)}</span>
-                    {d.temperature > 0 && <span className={d.temperature > 50 ? 'text-trakend-warning' : 'text-trakend-text-secondary'}>{d.temperature}°C</span>}
+                    {d.temperature > 0 && <span className={d.temperature > 50 ? 'text-trakend-warning' : 'text-trakend-text-secondary'}>{Math.round(d.temperature * 9 / 5 + 32)}°F</span>}
                   </div>
                 )
               })}

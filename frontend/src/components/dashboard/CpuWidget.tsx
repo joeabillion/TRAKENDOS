@@ -34,7 +34,7 @@ export const CpuWidget: React.FC = () => {
         <div className="p-3 bg-trakend-dark rounded border border-trakend-border text-center">
           <div className="text-xs text-trakend-text-secondary uppercase tracking-wide mb-1">Temp</div>
           <div className={`text-xl font-bold ${stats.cpu.temperature > 80 ? 'text-trakend-error' : stats.cpu.temperature > 60 ? 'text-trakend-warning' : 'text-trakend-accent'}`}>
-            {stats.cpu.temperature > 0 ? `${stats.cpu.temperature}°C` : '--'}
+            {stats.cpu.temperature > 0 ? `${Math.round(stats.cpu.temperature * 9 / 5 + 32)}°F` : '--'}
           </div>
         </div>
         <div className="p-3 bg-trakend-dark rounded border border-trakend-border text-center">

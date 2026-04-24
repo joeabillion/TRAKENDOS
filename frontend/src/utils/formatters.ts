@@ -38,8 +38,8 @@ export const formatPercentage = (value: number, decimals = 1): string => {
 }
 
 export const formatTemperature = (celsius: number): string => {
-  if (celsius == null || isNaN(celsius)) return '--°C'
-  return Math.round(celsius) + '°C'
+  if (celsius == null || isNaN(celsius)) return '--°F'
+  return Math.round(celsius * 9 / 5 + 32) + '°F'
 }
 
 export const formatUptime = (seconds: number): string => {

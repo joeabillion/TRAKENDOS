@@ -45,21 +45,46 @@ export const TerminalPage: React.FC = () => {
     })
 
     // Handle Ctrl+V / Cmd+V paste and Ctrl+C copy
+    // Block both keydown AND keyup for paste to prevent double-paste
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'v' && e.type === 'keydown') {
-        navigator.clipboard.readText().then((text) => {
-          term.paste(text)
-        }).catch(() => {})
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        if (e.type === 'keydown') {
+          navigator.clipboard.readText().then((text) => {
+            const ws = wsRef.current.get(tabId)
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'terminal:input', data: text }))
+            }
+          }).catch(() => {})
+        }
         return false
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c' && e.type === 'keydown') {
-        const sel = term.getSelection()
-        if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {})
-          return false
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (e.type === 'keydown') {
+          const sel = term.getSelection()
+          if (sel) {
+            navigator.clipboard.writeText(sel).catch(() => {})
+            return false
+          }
         }
       }
       return true
+    })
+
+    // Right-click context menu for copy/paste
+    container.addEventListener('contextmenu', (e) => {
+      e.preventDefault()
+      const sel = term.getSelection()
+      if (sel) {
+        navigator.clipboard.writeText(sel).catch(() => {})
+        term.clearSelection()
+      } else {
+        navigator.clipboard.readText().then((text) => {
+          const ws = wsRef.current.get(tabId)
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'terminal:input', data: text }))
+          }
+        }).catch(() => {})
+      }
     })
 
     const fitAddon = new FitAddon()
