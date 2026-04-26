@@ -44,17 +44,56 @@ export const TerminalPage: React.FC = () => {
       allowProposedApi: true,
     })
 
+    // Helper: paste text into terminal via WebSocket (Safari-safe)
+    const pasteToTerminal = (text: string) => {
+      const ws = wsRef.current.get(tabId)
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'terminal:input', data: text }))
+      }
+    }
+
+    // Helper: read clipboard with fallback for Safari/HTTP (no clipboard API)
+    const readClipboard = (callback: (text: string) => void) => {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(callback).catch(() => {
+          // Fallback: use hidden textarea for paste (works on Safari over HTTP)
+          const textarea = document.createElement('textarea')
+          textarea.style.position = 'fixed'
+          textarea.style.opacity = '0'
+          document.body.appendChild(textarea)
+          textarea.focus()
+          document.execCommand('paste')
+          const text = textarea.value
+          document.body.removeChild(textarea)
+          if (text) callback(text)
+          container.focus()
+        })
+      }
+    }
+
+    // Helper: write to clipboard with fallback for Safari/HTTP
+    const writeClipboard = (text: string) => {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {
+          // Fallback: execCommand
+          const textarea = document.createElement('textarea')
+          textarea.value = text
+          textarea.style.position = 'fixed'
+          textarea.style.opacity = '0'
+          document.body.appendChild(textarea)
+          textarea.select()
+          document.execCommand('copy')
+          document.body.removeChild(textarea)
+        })
+      }
+    }
+
     // Handle Ctrl+V / Cmd+V paste and Ctrl+C copy
     // Block both keydown AND keyup for paste to prevent double-paste
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
         if (e.type === 'keydown') {
-          navigator.clipboard.readText().then((text) => {
-            const ws = wsRef.current.get(tabId)
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'terminal:input', data: text }))
-            }
-          }).catch(() => {})
+          readClipboard(pasteToTerminal)
         }
         return false
       }
@@ -62,7 +101,7 @@ export const TerminalPage: React.FC = () => {
         if (e.type === 'keydown') {
           const sel = term.getSelection()
           if (sel) {
-            navigator.clipboard.writeText(sel).catch(() => {})
+            writeClipboard(sel)
             return false
           }
         }
@@ -70,20 +109,25 @@ export const TerminalPage: React.FC = () => {
       return true
     })
 
+    // Listen for browser paste events (catches Cmd+V on Safari even without clipboard API)
+    container.addEventListener('paste', (e: Event) => {
+      const clipboardEvent = e as ClipboardEvent
+      const text = clipboardEvent.clipboardData?.getData('text')
+      if (text) {
+        e.preventDefault()
+        pasteToTerminal(text)
+      }
+    })
+
     // Right-click context menu for copy/paste
     container.addEventListener('contextmenu', (e) => {
       e.preventDefault()
       const sel = term.getSelection()
       if (sel) {
-        navigator.clipboard.writeText(sel).catch(() => {})
+        writeClipboard(sel)
         term.clearSelection()
       } else {
-        navigator.clipboard.readText().then((text) => {
-          const ws = wsRef.current.get(tabId)
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'terminal:input', data: text }))
-          }
-        }).catch(() => {})
+        readClipboard(pasteToTerminal)
       }
     })
 

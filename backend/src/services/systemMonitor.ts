@@ -1,3 +1,4 @@
+// @ts-ignore - systeminformation types loaded at runtime
 import si from 'systeminformation';
 import { WebSocketServer, WebSocket } from 'ws';
 import { EventLogger } from './eventLogger';
@@ -388,29 +389,43 @@ export class SystemMonitor {
     }
   }
 
+  private hasNvidiaSmi: boolean | null = null;
+
   private async getGPUInfo(): Promise<GPUInfo[]> {
     // Try nvidia-smi first for NVIDIA GPUs (works better for Tesla/datacenter cards)
-    try {
-      const nvsmi = execSync(
-        'nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,temperature.gpu,utilization.gpu,driver_version --format=csv,noheader,nounits',
-        { encoding: 'utf-8', timeout: 5000 }
-      ).trim();
-      if (nvsmi) {
-        return nvsmi.split('\n').map((line) => {
-          const [model, vramTotal, vramUsed, vramFree, temp, util, driver] = line.split(', ').map(s => s.trim());
-          return {
-            model: model || 'Unknown GPU',
-            vram: parseInt(vramTotal) || 0,
-            vramUsed: parseInt(vramUsed) || 0,
-            vramFree: parseInt(vramFree) || 0,
-            temperature: parseInt(temp) || 0,
-            utilization: parseInt(util) || 0,
-            driver: driver || '',
-          };
-        });
+    // Cache the check so we don't spam "not found" errors every poll cycle
+    if (this.hasNvidiaSmi === null) {
+      try {
+        execSync('which nvidia-smi', { encoding: 'utf-8', timeout: 3000 });
+        this.hasNvidiaSmi = true;
+      } catch {
+        this.hasNvidiaSmi = false;
       }
-    } catch {
-      // nvidia-smi not available, fall back to systeminformation
+    }
+    if (this.hasNvidiaSmi) {
+      try {
+        const nvsmi = execSync(
+          'nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,temperature.gpu,utilization.gpu,driver_version --format=csv,noheader,nounits',
+          { encoding: 'utf-8', timeout: 5000 }
+        ).trim();
+        if (nvsmi) {
+          return nvsmi.split('\n').map((line) => {
+            const [model, vramTotal, vramUsed, vramFree, temp, util, driver] = line.split(', ').map(s => s.trim());
+            return {
+              model: model || 'Unknown GPU',
+              vram: parseInt(vramTotal) || 0,
+              vramUsed: parseInt(vramUsed) || 0,
+              vramFree: parseInt(vramFree) || 0,
+              temperature: parseInt(temp) || 0,
+              utilization: parseInt(util) || 0,
+              driver: driver || '',
+            };
+          });
+        }
+      } catch {
+        // nvidia-smi failed at runtime — disable future attempts
+        this.hasNvidiaSmi = false;
+      }
     }
     try {
       const graphics = await si.graphics();
@@ -477,7 +492,7 @@ export class SystemMonitor {
               if (bd.mount && bd.mount !== '') {
                 bestMount = bd.mount;
                 // Try to find matching fsSize for usage data
-                bestFs = fsSize.find(f => f.mount === bd.mount) || bestFs;
+                bestFs = fsSize.find((f: any) => f.mount === bd.mount) || bestFs;
                 break;
               }
             }

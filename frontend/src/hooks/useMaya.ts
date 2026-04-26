@@ -65,11 +65,11 @@ export const useMaya = () => {
     }
   }, [])
 
-  const investigate = useCallback(async (): Promise<MayaTask | null> => {
+  const investigate = useCallback(async (target: string = 'system'): Promise<MayaTask | null> => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.post('/maya/investigate')
+      const response = await api.post('/maya/investigate', { target })
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start investigation'

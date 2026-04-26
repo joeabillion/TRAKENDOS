@@ -62,13 +62,15 @@ mkdir -p "$DEBOOTSTRAP_DIR"
 
 # Run debootstrap with --download-only flag by doing full debootstrap,
 # then we'll tar the apt cache. Alternatively, use --make-tarball
+# NOTE: linux-image-generic is NOT included here — it runs depmod/update-initramfs
+# postinstall scripts that cause kernel panics on the live USB kernel.
+# It is downloaded separately in Phase A2 and installed with safety wrappers.
 debootstrap --arch=amd64 \
   --include=systemd,systemd-sysv,dbus,udev,kmod,iproute2,iputils-ping,\
 netplan.io,openssh-server,sudo,curl,wget,git,\
 ca-certificates,gnupg,lsb-release,pciutils,usbutils,\
 hdparm,dmidecode,parted,\
 e2fsprogs,dosfstools,ntfs-3g,mdadm,lvm2,\
-linux-image-generic,\
 python3,nano,less,cron \
   --make-tarball="$PKG_CACHE/debootstrap-base.tar" \
   jammy "$DEBOOTSTRAP_DIR" http://archive.ubuntu.com/ubuntu/ 2>&1 | tail -10
@@ -110,6 +112,7 @@ chroot "$DLROOT" bash -c '
   cd /tmp && mkdir -p debs
 
   apt-get install -y --download-only -o Dir::Cache::archives=/tmp/debs/ \
+    linux-image-generic linux-headers-generic \
     grub-efi-amd64 grub-efi-amd64-bin grub-efi-amd64-signed \
     shim-signed efibootmgr grub2-common grub-common \
     smartmontools lm-sensors htop tmux \
@@ -616,6 +619,9 @@ mount "$T_DATA" "$INST/data" || die "Cannot mount data partition"
 ok "Partitions mounted"
 
 # Use the pre-cached debootstrap tarball for OFFLINE install
+# NOTE: linux-image-generic is NOT included — it causes kernel panics
+# when its postinstall scripts run depmod/update-initramfs on the live USB kernel.
+# It is installed later with safety wrappers in place.
 if [ -f "$OFFLINE_DIR/debootstrap-base.tar" ]; then
   log "Using offline package cache..."
   debootstrap --arch=amd64 \
@@ -624,7 +630,6 @@ netplan.io,openssh-server,sudo,curl,wget,git,\
 ca-certificates,gnupg,lsb-release,pciutils,usbutils,\
 hdparm,dmidecode,parted,\
 e2fsprogs,dosfstools,ntfs-3g,mdadm,lvm2,\
-linux-image-generic,\
 python3,nano,less,cron \
     --unpack-tarball="$OFFLINE_DIR/debootstrap-base.tar" \
     jammy "$INST" 2>&1 | while IFS= read -r line; do echo -n "."; done
@@ -638,7 +643,6 @@ netplan.io,openssh-server,sudo,curl,wget,git,\
 ca-certificates,gnupg,lsb-release,pciutils,usbutils,\
 hdparm,dmidecode,parted,\
 e2fsprogs,dosfstools,ntfs-3g,mdadm,lvm2,\
-linux-image-generic,\
 python3,nano,less,cron \
     jammy "$INST" http://archive.ubuntu.com/ubuntu/ 2>&1 | \
     while IFS= read -r line; do echo -n "."; done
@@ -979,6 +983,8 @@ cat > "$INST/etc/systemd/system/trakend-os.service" << SVCEOF
 Description=Trakend OS Server Management Platform
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
+StartLimitBurst=0
 
 [Service]
 Type=simple
@@ -988,8 +994,6 @@ ExecStartPre=/bin/mkdir -p /data/docker /data/mysql /data/db /data/logs /data/ba
 ExecStart=/usr/bin/node backend/ws-wrapper.js
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 TimeoutStopSec=10
 KillMode=mixed
 KillSignal=SIGTERM
@@ -1104,10 +1108,10 @@ cat > "$INST/etc/systemd/system/trakend-safemode.service" << 'SMSVC'
 [Unit]
 Description=Trakend OS Safe Mode
 ConditionKernelCommandLine=trakend.safemode=1
-Before=trakend-os.service docker.service
-Conflicts=trakend-os.service
+Before=docker.service
 [Service]
 Type=simple
+ExecStartPre=/bin/systemctl stop trakend-os.service
 ExecStart=/opt/trakend/scripts/safemode.sh
 StandardInput=tty
 StandardOutput=tty

@@ -96,7 +96,7 @@ export const LogsPage: React.FC = () => {
     }
   }
 
-  const sources = stats ? Object.keys(stats.bySource).filter(s => stats.bySource[s] > 0) : []
+  const sources = stats && stats.bySource ? Object.keys(stats.bySource).filter(s => stats.bySource[s] > 0) : []
 
   return (
     <div className="flex-1 bg-trakend-dark h-full flex flex-col overflow-hidden">

@@ -90,6 +90,9 @@ const wss = new WebSocketServer({ server });
 app.use(helmet({
   contentSecurityPolicy: false,
 }));
+// CORS: Allow all origins with credentials for local LAN access.
+// This is intentional for a LAN-based server OS. In production exposed to untrusted networks,
+// restrict to specific origins. No CSRF tokens needed since this is a local server OS.
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -207,12 +210,11 @@ app.use('/api/system', authMiddleware, createSystemRouter(systemMonitor));
 app.use('/api/docker', authMiddleware, createDockerRouter(dockerService));
 app.use('/api/settings', authMiddleware, createSettingsRouter(settingsModel));
 app.use('/api/logs', authMiddleware, createLogsRouter(logger));
-app.use('/api/database', authMiddleware, createMysqlRouter(mysqlService));
 app.use('/api/database', authMiddleware, createDatabaseRouter(databaseService));
+app.use('/api/mysql', authMiddleware, createMysqlRouter(mysqlService));
 app.use('/api/maya', authMiddleware, createMayaRouter(mayaService));
 app.use('/api/updates', authMiddleware, createUpdatesRouter(updateService));
 app.use('/api/terminal', authMiddleware, createTerminalRouter(terminalService));
-app.use('/api/mysql', authMiddleware, createMysqlRouter(mysqlService));
 app.use('/api/apps', authMiddleware, createAppsRouter(dockerService, appTemplatesService, logger));
 app.use('/api/array', authMiddleware, createArrayRoutes(arrayService));
 app.use('/api/files', authMiddleware, createFilesRouter(fileService));
@@ -232,6 +234,62 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const sessionId = url.split('/').pop();
     if (sessionId) {
       setupTerminalWebSocket(ws, sessionId, terminalService);
+    }
+  }
+  // Docker exec stream
+  else if (url.startsWith('/ws/docker-exec/')) {
+    const execId = url.split('/').pop();
+    if (execId) {
+      const session = dockerService.getExecSession(execId);
+      if (!session) {
+        ws.close(1008, 'Exec session not found');
+        return;
+      }
+
+      // Start the exec session with hijack mode
+      session.exec.start({ hijack: true, stdin: true, Tty: true }, (err: any, stream: any) => {
+        if (err || !stream) {
+          ws.close(1011, String(err || 'Failed to start exec'));
+          return;
+        }
+
+        // Pipe container output → WebSocket
+        stream.on('data', (chunk: Buffer) => {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ type: 'terminal:data', data: chunk.toString() }));
+          }
+        });
+
+        stream.on('end', () => {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ type: 'terminal:data', data: '\r\n\x1b[33mSession ended\x1b[0m\r\n' }));
+            ws.close(1000);
+          }
+          dockerService.closeExecSession(execId);
+        });
+
+        // Pipe WebSocket input → container
+        ws.on('message', (message: string) => {
+          try {
+            const parsed = JSON.parse(message.toString());
+            if (parsed.type === 'terminal:input') {
+              stream.write(parsed.data);
+            } else if (parsed.type === 'terminal:resize' && session.exec.resize) {
+              session.exec.resize({ h: parsed.rows, w: parsed.cols }).catch(() => {});
+            }
+          } catch {}
+        });
+
+        ws.on('close', () => {
+          stream.end();
+          dockerService.closeExecSession(execId);
+        });
+
+        ws.on('error', () => {
+          stream.end();
+          dockerService.closeExecSession(execId);
+        });
+      });
     }
   }
   // Logs stream

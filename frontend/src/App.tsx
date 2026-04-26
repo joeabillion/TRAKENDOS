@@ -13,6 +13,7 @@ import { MayaPage } from './components/maya/MayaPage'
 import { SettingsPage } from './components/settings/SettingsPage'
 import ArrayPage from './components/array/ArrayPage'
 import { FileBrowserPage } from './components/files/FileBrowserPage'
+import { SharesPage } from './components/shares/SharesPage'
 import { BootScreen } from './components/auth/BootScreen'
 import { LoginPage } from './components/auth/LoginPage'
 import api from './utils/api'
@@ -32,6 +33,7 @@ function AppLayout() {
             <Route path="/docker" element={<DockerPage />} />
             <Route path="/database" element={<DatabasePage />} />
             <Route path="/files" element={<FileBrowserPage />} />
+            <Route path="/shares" element={<SharesPage />} />
             <Route path="/terminal" element={<TerminalPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/maya" element={<MayaPage />} />

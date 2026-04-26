@@ -144,7 +144,7 @@ interface WebSocketContextType {
   logs: LogEntry[]
   mayaNotifications: MayaNotification[]
   sendCommand: (command: string, payload?: Record<string, unknown>) => void
-  subscribeToDoctorEvents: (callback: (event: DockerEvent) => void) => () => void
+  subscribeToDockerEvents: (callback: (event: DockerEvent) => void) => () => void
   subscribeToLogs: (callback: (log: LogEntry) => void) => () => void
   subscribeToMayaNotifications: (callback: (notif: MayaNotification) => void) => () => void
 }
@@ -258,7 +258,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }
 
-  const subscribeToDoctorEvents = (callback: (event: DockerEvent) => void) => {
+  const subscribeToDockerEvents = (callback: (event: DockerEvent) => void) => {
     dockerEventCallbacksRef.current.add(callback)
     return () => {
       dockerEventCallbacksRef.current.delete(callback)
@@ -299,7 +299,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     logs,
     mayaNotifications,
     sendCommand,
-    subscribeToDoctorEvents,
+    subscribeToDockerEvents,
     subscribeToLogs,
     subscribeToMayaNotifications,
   }

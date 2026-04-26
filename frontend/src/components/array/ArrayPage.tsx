@@ -42,6 +42,7 @@ interface ArrayConfig {
   reconstruct_write: boolean
   parity_check_schedule: string
   auto_start: boolean
+  last_parity_check?: string
 }
 
 interface ParityOp {
@@ -266,7 +267,7 @@ const ArrayPage: React.FC = () => {
   const deleteShare = async (id: string) => {
     if (!confirm('Delete this share?')) return
     try {
-      await api.delete(`/api/array/shares/${id}`)
+      await api.delete(`/array/shares/${id}`)
       await fetchData()
     } catch (err: any) {
       alert(err.response?.data?.error || 'Failed to delete share')
@@ -286,8 +287,27 @@ const ArrayPage: React.FC = () => {
   const unassignedDrives = drives.filter(d => d.role === 'unassigned')
   const parityOp = summary?.parity_operation
 
+  if (!config) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <RefreshCw className="w-8 h-8 text-trakend-accent animate-spin" />
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
+      {/* Degraded mode warning banner */}
+      {config.state === 'degraded' && (
+        <div className="p-4 bg-orange-500/20 border border-orange-400/50 rounded-lg flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-orange-400 flex-shrink-0" />
+          <div>
+            <h3 className="font-semibold text-orange-300">Array Running in Degraded Mode</h3>
+            <p className="text-sm text-orange-200 mt-0.5">One or more drives are missing or not mounted. Data protection may be compromised.</p>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -296,12 +316,12 @@ const ArrayPage: React.FC = () => {
             Array Manager
           </h1>
           <p className="text-sm text-trakend-text-secondary mt-1">
-            {config?.name || 'Trakend Array'} — {summary?.data_drives || 0} data, {summary?.parity_drives || 0} parity, {summary?.cache_drives || 0} cache
+            {config.name} — {summary?.data_drives || 0} data, {summary?.parity_drives || 0} parity, {summary?.cache_drives || 0} cache
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <StateBadge state={config?.state || 'stopped'} />
-          {config?.state === 'stopped' ? (
+          <StateBadge state={config.state} />
+          {config.state === 'stopped' ? (
             <button onClick={startArray} className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors">
               <Play className="w-4 h-4" /> Start Array
             </button>
@@ -384,19 +404,19 @@ const ArrayPage: React.FC = () => {
               <div className="space-y-2">
                 {/* Parity drives first */}
                 {assignedDrives.filter(d => d.role === 'parity' || d.role === 'parity2').map(drive => (
-                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config?.state === 'stopped'} />
+                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped'} />
                 ))}
                 {/* Then data drives sorted by slot */}
                 {assignedDrives.filter(d => d.role === 'data').sort((a, b) => (a.slot || 0) - (b.slot || 0)).map(drive => (
-                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config?.state === 'stopped'} />
+                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped'} />
                 ))}
                 {/* Cache */}
                 {assignedDrives.filter(d => d.role === 'cache').map(drive => (
-                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config?.state === 'stopped'} />
+                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped'} />
                 ))}
                 {/* Hot spares */}
                 {assignedDrives.filter(d => d.role === 'hot_spare').map(drive => (
-                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config?.state === 'stopped'} />
+                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped'} />
                 ))}
               </div>
             )}
@@ -412,7 +432,7 @@ const ArrayPage: React.FC = () => {
                     key={drive.id}
                     drive={drive}
                     onAssign={() => setAssignDialog({ drive, open: true })}
-                    arrayStopped={config?.state === 'stopped'}
+                    arrayStopped={config.state === 'stopped'}
                   />
                 ))}
               </div>
@@ -437,22 +457,22 @@ const ArrayPage: React.FC = () => {
           {/* Parity status card */}
           <div className="p-6 bg-trakend-surface border border-trakend-border rounded-lg">
             <div className="flex items-center gap-3 mb-4">
-              {config?.parity_state === 'valid' ? (
+              {config.parity_state === 'valid' ? (
                 <ShieldCheck className="w-8 h-8 text-green-400" />
-              ) : config?.parity_state === 'invalid' ? (
+              ) : config.parity_state === 'invalid' ? (
                 <ShieldAlert className="w-8 h-8 text-orange-400" />
-              ) : config?.parity_state === 'building' || config?.parity_state === 'checking' ? (
+              ) : config.parity_state === 'building' || config.parity_state === 'checking' ? (
                 <Shield className="w-8 h-8 text-blue-400 animate-pulse" />
               ) : (
                 <ShieldOff className="w-8 h-8 text-gray-400" />
               )}
               <div>
                 <h2 className="text-lg font-semibold text-trakend-text-primary">
-                  Parity Status: {config?.parity_state?.toUpperCase() || 'NONE'}
+                  Parity Status: {config.parity_state?.toUpperCase() || 'NONE'}
                 </h2>
                 <p className="text-sm text-trakend-text-secondary">
                   {summary?.parity_drives || 0} parity drive(s) assigned
-                  {config?.parity_state === 'valid' && config?.last_parity_check &&
+                  {config.parity_state === 'valid' && config.last_parity_check &&
                     ` — Last check: ${new Date(config.last_parity_check).toLocaleDateString()}`
                   }
                 </p>
@@ -488,21 +508,21 @@ const ArrayPage: React.FC = () => {
             <div className="flex gap-3 mt-4">
               <button
                 onClick={startParitySync}
-                disabled={config?.state !== 'running' || !!parityOp?.status?.match(/running/)}
+                disabled={config.state !== 'running' || parityOp?.status === 'running'}
                 className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <RefreshCw className="w-4 h-4" /> Parity Sync
               </button>
               <button
                 onClick={() => startParityCheck(false)}
-                disabled={config?.parity_state !== 'valid' || !!parityOp?.status?.match(/running/)}
+                disabled={config.parity_state !== 'valid' || parityOp?.status === 'running'}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Search className="w-4 h-4" /> Check Parity
               </button>
               <button
                 onClick={() => startParityCheck(true)}
-                disabled={config?.parity_state !== 'valid' || !!parityOp?.status?.match(/running/)}
+                disabled={config.parity_state !== 'valid' || parityOp?.status === 'running'}
                 className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <RotateCcw className="w-4 h-4" /> Check + Correct
@@ -684,14 +704,30 @@ const DriveRow: React.FC<{
 }> = ({ drive, onAssign, onUnassign, arrayStopped }) => {
   const [expanded, setExpanded] = useState(false)
 
-  const usagePercent = drive.size_bytes > 0 && drive.usage_bytes
-    ? Math.round((drive.usage_bytes / drive.size_bytes) * 100)
+  const usagePercent = drive.size_bytes > 0 && (drive.usage_bytes || 0) > 0
+    ? Math.round(((drive.usage_bytes || 0) / drive.size_bytes) * 100)
     : 0
+
+  // Determine drive status indicator
+  const getStatusIndicator = () => {
+    if (arrayStopped) {
+      return <span className="w-2.5 h-2.5 rounded-full bg-gray-500 flex-shrink-0" title="Array stopped" />
+    }
+    if (!drive.mount_point) {
+      return <span className="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0" title="Not mounted or missing" />
+    }
+    if (drive.health === 'warning' || drive.health === 'failing') {
+      return <span className="w-2.5 h-2.5 rounded-full bg-yellow-500 flex-shrink-0" title="Present but in warning/failing state" />
+    }
+    return <span className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" title="Healthy and mounted" />
+  }
 
   return (
     <div className="bg-trakend-surface border border-trakend-border rounded-lg overflow-hidden">
       <div className="flex items-center gap-4 p-3 cursor-pointer hover:bg-trakend-bg/50" onClick={() => setExpanded(!expanded)}>
         {expanded ? <ChevronDown className="w-4 h-4 text-trakend-text-secondary" /> : <ChevronRight className="w-4 h-4 text-trakend-text-secondary" />}
+
+        {getStatusIndicator()}
 
         <HardDrive className={`w-5 h-5 ${
           drive.role === 'parity' || drive.role === 'parity2' ? 'text-purple-400' :
@@ -761,6 +797,16 @@ const DriveRow: React.FC<{
               <div className="text-trakend-text-primary">{drive.filesystem || 'None'}</div>
             </div>
             <div>
+              <div className="text-trakend-text-secondary">Mount Status</div>
+              <div className={drive.mount_point ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+                {drive.mount_point ? 'Mounted' : 'Not Mounted'}
+              </div>
+            </div>
+            <div>
+              <div className="text-trakend-text-secondary">Mount Point</div>
+              <div className="text-trakend-text-primary font-mono">{drive.mount_point || '—'}</div>
+            </div>
+            <div>
               <div className="text-trakend-text-secondary">Power-On Hours</div>
               <div className="text-trakend-text-primary">{drive.power_on_hours.toLocaleString()}</div>
             </div>
@@ -775,10 +821,6 @@ const DriveRow: React.FC<{
               <div className={drive.smart_passed ? 'text-green-400' : 'text-red-400'}>
                 {drive.smart_passed ? 'PASSED' : 'FAILED'}
               </div>
-            </div>
-            <div>
-              <div className="text-trakend-text-secondary">Mount Point</div>
-              <div className="text-trakend-text-primary font-mono">{drive.mount_point || 'Not mounted'}</div>
             </div>
             <div>
               <div className="text-trakend-text-secondary">Spin State</div>

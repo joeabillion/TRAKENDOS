@@ -25,6 +25,45 @@ export interface ContainerStats {
   networkTx: number
 }
 
+export interface DockerImage {
+  id: string
+  repoTags: string[]
+  size: number
+  created: number
+  virtualSize?: number
+  dangling?: boolean
+  containersUsing?: number
+}
+
+export interface DockerNetwork {
+  name: string
+  id: string
+  driver: string
+  scope: string
+  containers: Record<string, any>
+  options: Record<string, string>
+}
+
+export interface DockerVolume {
+  name: string
+  driver: string
+  mountpoint: string
+  labels: Record<string, string>
+  options: Record<string, string>
+  containersUsing?: number
+}
+
+export interface DockerSettings {
+  daemonConfig: Record<string, any>
+  storageUsage: {
+    imagesSize: number
+    containersSize: number
+    volumesSize: number
+    buildCacheSize: number
+  }
+  dataRoot: string
+}
+
 export const useDocker = () => {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -118,7 +157,7 @@ export const useDocker = () => {
     setLoading(true)
     setError(null)
     try {
-      await api.delete(`/docker/containers/${containerId}`)
+      await api.post(`/docker/containers/${containerId}/remove`, { force: true })
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to remove container'
@@ -139,6 +178,325 @@ export const useDocker = () => {
     }
   }, [])
 
+  const getSettings = useCallback(async (): Promise<DockerSettings | null> => {
+    try {
+      const response = await api.get('/docker/settings')
+      return response.data
+    } catch (err) {
+      console.error('Failed to fetch settings:', err)
+      return null
+    }
+  }, [])
+
+  const updateSettings = useCallback(async (settings: any): Promise<boolean> => {
+    setLoading(true)
+    setError(null)
+    try {
+      await api.put('/docker/settings', settings)
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update settings'
+      setError(message)
+      return false
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const getImages = useCallback(async (): Promise<DockerImage[]> => {
+    try {
+      const response = await api.get('/docker/images')
+      return response.data || []
+    } catch (err) {
+      console.error('Failed to fetch images:', err)
+      return []
+    }
+  }, [])
+
+  const removeImage = useCallback(async (imageId: string, force = false): Promise<boolean> => {
+    setLoading(true)
+    setError(null)
+    try {
+      await api.delete(`/docker/images/${imageId}?force=${force}`)
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to remove image'
+      setError(message)
+      return false
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const getNetworks = useCallback(async (): Promise<DockerNetwork[]> => {
+    try {
+      const response = await api.get('/docker/networks')
+      return response.data || []
+    } catch (err) {
+      console.error('Failed to fetch networks:', err)
+      return []
+    }
+  }, [])
+
+  const getVolumes = useCallback(async (): Promise<DockerVolume[]> => {
+    try {
+      const response = await api.get('/docker/volumes')
+      return response.data || []
+    } catch (err) {
+      console.error('Failed to fetch volumes:', err)
+      return []
+    }
+  }, [])
+
+  const removeVolume = useCallback(async (volumeName: string): Promise<boolean> => {
+    setLoading(true)
+    setError(null)
+    try {
+      await api.delete(`/docker/volumes/${volumeName}`)
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to remove volume'
+      setError(message)
+      return false
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const forceRemoveContainer = useCallback(async (containerId: string): Promise<boolean> => {
+    setLoading(true)
+    setError(null)
+    try {
+      await api.post(`/docker/containers/${containerId}/force-remove`)
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to force remove container'
+      setError(message)
+      return false
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const migrateStorage = useCallback(
+    async (newPath: string, onProgress?: (message: string) => void): Promise<boolean> => {
+      setLoading(true)
+      setError(null)
+      try {
+        const response = await fetch('/api/docker/storage/migrate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+          },
+          body: JSON.stringify({ newPath }),
+        })
+
+        if (!response.ok) {
+          throw new Error('Migration failed')
+        }
+
+        const reader = response.body?.getReader()
+        if (!reader) throw new Error('No response body')
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = JSON.parse(line.slice(6))
+              if (onProgress) {
+                onProgress(data.message)
+              }
+            }
+          }
+        }
+
+        setLoading(false)
+        return true
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to migrate storage'
+        setError(message)
+        setLoading(false)
+        return false
+      }
+    },
+    []
+  )
+
+  const fullBackup = useCallback(
+    async (destPath = '/data/backups/docker/', onProgress?: (message: string) => void): Promise<boolean> => {
+      setLoading(true)
+      setError(null)
+      try {
+        const response = await fetch('/api/docker/backup', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+          },
+          body: JSON.stringify({ destPath }),
+        })
+
+        if (!response.ok) {
+          throw new Error('Backup failed')
+        }
+
+        const reader = response.body?.getReader()
+        if (!reader) throw new Error('No response body')
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = JSON.parse(line.slice(6))
+              if (data.complete) {
+                setLoading(false)
+                return true
+              } else if (onProgress) {
+                onProgress(data.message)
+              }
+            }
+          }
+        }
+
+        setLoading(false)
+        return true
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to create backup'
+        setError(message)
+        setLoading(false)
+        return false
+      }
+    },
+    []
+  )
+
+  const fullRestore = useCallback(
+    async (backupPath: string, onProgress?: (message: string) => void): Promise<boolean> => {
+      setLoading(true)
+      setError(null)
+      try {
+        const response = await fetch('/api/docker/restore', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+          },
+          body: JSON.stringify({ backupPath }),
+        })
+
+        if (!response.ok) {
+          throw new Error('Restore failed')
+        }
+
+        const reader = response.body?.getReader()
+        if (!reader) throw new Error('No response body')
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = JSON.parse(line.slice(6))
+              if (data.complete) {
+                setLoading(false)
+                return true
+              } else if (onProgress) {
+                onProgress(data.message)
+              }
+            }
+          }
+        }
+
+        setLoading(false)
+        return true
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to restore backup'
+        setError(message)
+        setLoading(false)
+        return false
+      }
+    },
+    []
+  )
+
+  const inspectContainer = useCallback(async (containerId: string): Promise<any> => {
+    try {
+      const response = await api.get(`/docker/containers/${containerId}/inspect`)
+      return response.data
+    } catch (err) {
+      console.error('Failed to inspect container:', err)
+      return null
+    }
+  }, [])
+
+  const execContainer = useCallback(async (containerId: string): Promise<string | null> => {
+    try {
+      const response = await api.post(`/docker/containers/${containerId}/exec`)
+      return response.data.execId
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create exec session'
+      setError(message)
+      return null
+    }
+  }, [])
+
+  const recreateContainer = useCallback(async (containerId: string, config: any): Promise<string | null> => {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.post(`/docker/containers/${containerId}/recreate`, { config })
+      return response.data.containerId
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to recreate container'
+      setError(message)
+      return null
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const pruneSystem = useCallback(async (): Promise<boolean> => {
+    setLoading(true)
+    setError(null)
+    try {
+      await api.post('/docker/system/prune')
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to prune system'
+      setError(message)
+      return false
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
   return {
     loading,
     error,
@@ -149,5 +507,20 @@ export const useDocker = () => {
     restartContainer,
     removeContainer,
     getLogs,
+    getSettings,
+    updateSettings,
+    getImages,
+    removeImage,
+    getNetworks,
+    getVolumes,
+    removeVolume,
+    forceRemoveContainer,
+    migrateStorage,
+    fullBackup,
+    fullRestore,
+    pruneSystem,
+    inspectContainer,
+    execContainer,
+    recreateContainer,
   }
 }

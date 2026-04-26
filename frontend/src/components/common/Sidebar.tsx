@@ -6,6 +6,7 @@ import {
   Container,
   Database,
   FolderOpen,
+  Share2,
   Terminal,
   ScrollText,
   Zap,
@@ -13,6 +14,7 @@ import {
   AlertCircle,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { useWebSocket } from '../../context/WebSocketContext'
 
 interface NavItem {
   path: string
@@ -26,6 +28,7 @@ const navItems: NavItem[] = [
   { path: '/docker', label: 'Docker', icon: <Container size={20} /> },
   { path: '/database', label: 'Database', icon: <Database size={20} /> },
   { path: '/files', label: 'Files', icon: <FolderOpen size={20} /> },
+  { path: '/shares', label: 'Shares', icon: <Share2 size={20} /> },
   { path: '/terminal', label: 'Terminal', icon: <Terminal size={20} /> },
   { path: '/logs', label: 'Logs', icon: <ScrollText size={20} /> },
   { path: '/maya', label: 'Maya AI', icon: <Zap size={20} /> },
@@ -34,6 +37,7 @@ const navItems: NavItem[] = [
 
 export const Sidebar: React.FC = () => {
   const location = useLocation()
+  const { connected } = useWebSocket()
 
   return (
     <aside className="w-64 bg-trakend-surface border-r border-trakend-border h-screen flex flex-col">
@@ -89,8 +93,11 @@ export const Sidebar: React.FC = () => {
       {/* Footer Status */}
       <div className="border-t border-trakend-border p-4">
         <div className="flex items-center gap-2 text-xs text-trakend-text-secondary">
-          <div className="w-2 h-2 bg-trakend-success rounded-full animate-pulse"></div>
-          <span>System Online</span>
+          <div className={clsx(
+            'w-2 h-2 rounded-full',
+            connected ? 'bg-trakend-success animate-pulse' : 'bg-trakend-error'
+          )}></div>
+          <span>{connected ? 'System Online' : 'Disconnected'}</span>
         </div>
       </div>
     </aside>

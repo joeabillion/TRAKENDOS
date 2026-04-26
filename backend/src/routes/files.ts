@@ -67,9 +67,41 @@ export function createFilesRouter(fileService: FileService): Router {
     try {
       const filePath = req.query.path as string;
       if (!filePath) return res.status(400).json({ error: 'path is required' });
-      const info = await fileService.getFileInfo(filePath);
-      if (info.type !== 'file') return res.status(400).json({ error: 'Not a file' });
-      res.download(filePath);
+
+      // Security: Resolve and validate the path
+      const fs = await import('fs');
+      const path = await import('path');
+
+      const resolved = path.resolve(filePath);
+
+      // Whitelist allowed base directories for downloads
+      const allowedBases = ['/mnt/', '/data/', '/home/', '/opt/trakend/'];
+      const isAllowed = allowedBases.some(base => resolved.startsWith(base));
+
+      if (!isAllowed) {
+        return res.status(403).json({ error: 'Access denied: Path not in allowed directories' });
+      }
+
+      // Check if file exists and is not a symlink (prevent symlink escapes)
+      try {
+        const stat = fs.lstatSync(resolved);
+        if (stat.isSymbolicLink()) {
+          // Resolve symlink and check if target is still within allowed dirs
+          const realPath = fs.realpathSync(resolved);
+          const realAllowed = allowedBases.some(base => realPath.startsWith(base));
+          if (!realAllowed) {
+            return res.status(403).json({ error: 'Access denied: Symlink target not in allowed directories' });
+          }
+        }
+        if (!stat.isFile()) {
+          return res.status(400).json({ error: 'Not a file' });
+        }
+      } catch (e) {
+        return res.status(404).json({ error: 'File not found' });
+      }
+
+      // Safe to download
+      res.download(resolved);
     } catch (error: any) {
       res.status(500).json({ error: error.message || String(error) });
     }

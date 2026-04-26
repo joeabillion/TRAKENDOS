@@ -263,7 +263,7 @@ export class MysqlService {
 
   async stopContainer(): Promise<void> {
     try {
-      this.closeConnection();
+      await this.closeConnection();
       const container = await this.getContainer();
       if (container) {
         await container.stop();
@@ -277,7 +277,7 @@ export class MysqlService {
 
   async restartContainer(): Promise<void> {
     try {
-      this.closeConnection();
+      await this.closeConnection();
       const container = await this.getContainer();
       if (container) {
         await container.restart();
@@ -303,7 +303,10 @@ export class MysqlService {
 
       for (const db of databases as Array<{ SCHEMA_NAME: string }>) {
         try {
-          const [infoRows] = await conn.query(`SELECT TABLE_SCHEMA, COUNT(*) as table_count, ROUND(SUM(DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2) as size_mb FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${db.SCHEMA_NAME}' GROUP BY TABLE_SCHEMA`) as any[];
+          const [infoRows] = await conn.query(
+            'SELECT TABLE_SCHEMA, COUNT(*) as table_count, ROUND(SUM(DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2) as size_mb FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? GROUP BY TABLE_SCHEMA',
+            [db.SCHEMA_NAME]
+          ) as any[];
           const info = (infoRows as any[])?.[0];
 
           dbList.push({
@@ -331,6 +334,17 @@ export class MysqlService {
     try {
       await this.ensureMariaDBRunning();
       const conn = await this.getConnection();
+      // Use backticks for database name and validate charset/collation
+      const validCharsets = ['utf8mb4', 'utf8', 'latin1'];
+      const validCollations = ['utf8mb4_unicode_ci', 'utf8_general_ci', 'latin1_swedish_ci'];
+
+      if (!validCharsets.includes(charset)) {
+        throw new Error('Invalid charset');
+      }
+      if (!validCollations.includes(collation)) {
+        throw new Error('Invalid collation');
+      }
+
       await conn.query(`CREATE DATABASE \`${name}\` CHARACTER SET ${charset} COLLATE ${collation}`);
       this.logger.info('MYSQL', `Database '${name}' created`);
     } catch (error) {
@@ -355,7 +369,10 @@ export class MysqlService {
     try {
       await this.ensureMariaDBRunning();
       const conn = await this.getConnection();
-      const [tables] = await conn.query(`SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${database}'`);
+      const [tables] = await conn.query(
+        'SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ?',
+        [database]
+      );
       return (tables as Array<{ TABLE_NAME: string }>).map((t) => t.TABLE_NAME);
     } catch (error) {
       this.logger.error('MYSQL', `Failed to list tables: ${error}`);
@@ -368,7 +385,10 @@ export class MysqlService {
       await this.ensureMariaDBRunning();
       const conn = await this.getConnection();
 
-      const [columns] = await conn.query(`SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${database}' AND TABLE_NAME = '${table}'`);
+      const [columns] = await conn.query(
+        'SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+        [database, table]
+      );
 
       const columnList: ColumnInfo[] = (columns as any[]).map((col) => ({
         name: col.COLUMN_NAME,
@@ -379,7 +399,7 @@ export class MysqlService {
         extra: col.EXTRA || '',
       }));
 
-      // Get sample data
+      // Get sample data using parameterized query with backticks for database and table names
       const [sampleData] = await conn.query(`SELECT * FROM \`${database}\`.\`${table}\` LIMIT 5`);
 
       return {
@@ -396,6 +416,7 @@ export class MysqlService {
     try {
       await this.ensureMariaDBRunning();
       const conn = await this.getConnection();
+      // Use backticks for database name in USE statement
       await conn.query(`USE \`${database}\``);
       const [result] = await conn.query(sql);
       return result;
@@ -424,7 +445,11 @@ export class MysqlService {
     try {
       await this.ensureMariaDBRunning();
       const conn = await this.getConnection();
-      await conn.query(`CREATE USER '${user}'@'${host}' IDENTIFIED BY '${password}'`);
+      // Use single quotes to wrap user and host identifiers, and parameterized query for password
+      await conn.query(
+        `CREATE USER ? IDENTIFIED BY ?`,
+        [`${user}@${host}`, password]
+      );
       this.logger.info('MYSQL', `User '${user}'@'${host}' created`);
     } catch (error) {
       this.logger.error('MYSQL', `Failed to create user: ${error}`);
@@ -436,7 +461,11 @@ export class MysqlService {
     try {
       await this.ensureMariaDBRunning();
       const conn = await this.getConnection();
-      await conn.query(`DROP USER '${user}'@'${host}'`);
+      // Use parameterized query for user identifier
+      await conn.query(
+        `DROP USER ?`,
+        [`${user}@${host}`]
+      );
       this.logger.info('MYSQL', `User '${user}'@'${host}' dropped`);
     } catch (error) {
       this.logger.error('MYSQL', `Failed to drop user: ${error}`);
@@ -448,7 +477,20 @@ export class MysqlService {
     try {
       await this.ensureMariaDBRunning();
       const conn = await this.getConnection();
-      await conn.query(`GRANT ${privileges} ON \`${database}\`.\`${table}\` TO '${user}'@'${host}'`);
+      // Validate privileges to prevent SQL injection via privilege parameter
+      const validPrivileges = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALL PRIVILEGES'];
+      const privList = privileges.split(',').map(p => p.trim().toUpperCase());
+
+      for (const priv of privList) {
+        if (!validPrivileges.includes(priv)) {
+          throw new Error(`Invalid privilege: ${priv}`);
+        }
+      }
+
+      await conn.query(
+        `GRANT ${privileges} ON \`${database}\`.\`${table}\` TO ?`,
+        [`${user}@${host}`]
+      );
       await conn.query('FLUSH PRIVILEGES');
       this.logger.info('MYSQL', `Privileges granted to '${user}'@'${host}'`);
     } catch (error) {
@@ -461,7 +503,11 @@ export class MysqlService {
     try {
       await this.ensureMariaDBRunning();
       const conn = await this.getConnection();
-      const [grants] = await conn.query(`SHOW GRANTS FOR '${user}'@'${host}'`);
+      // Use parameterized query for user identifier
+      const [grants] = await conn.query(
+        `SHOW GRANTS FOR ?`,
+        [`${user}@${host}`]
+      );
       return (grants as any[]).map((g) => Object.values(g)[0] as string);
     } catch (error) {
       this.logger.error('MYSQL', `Failed to show grants: ${error}`);

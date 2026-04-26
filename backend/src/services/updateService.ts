@@ -141,8 +141,33 @@ export class UpdateService {
     }
   }
 
+  private isGitRepo(): boolean {
+    try {
+      execSync(`git -C ${this.repoPath} rev-parse --is-inside-work-tree`, {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async checkForUpdates(): Promise<UpdateInfo> {
     try {
+      // Bail early if not a git repo — avoids fatal errors on fresh installs
+      if (!this.isGitRepo()) {
+        this.logger.debug('SYSTEM', 'No git repository found — skipping update check');
+        return {
+          currentVersion: '1.0.000',
+          latestVersion: '1.0.000',
+          hasUpdate: false,
+          commits: [],
+          lastChecked: Date.now(),
+        };
+      }
+
       const currentVersion = await this.getCurrentVersion();
 
       // Fetch latest info from remote

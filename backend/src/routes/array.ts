@@ -18,6 +18,16 @@ export function createArrayRoutes(arrayService: ArrayService): Router {
     }
   });
 
+  // GET /api/array/status — Detailed array status with drive health info
+  router.get('/status', (_req: Request, res: Response) => {
+    try {
+      const status = arrayService.getArrayStatus();
+      res.json(status);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
   // GET /api/array/config — Array configuration
   router.get('/config', (_req: Request, res: Response) => {
     try {
@@ -30,7 +40,53 @@ export function createArrayRoutes(arrayService: ArrayService): Router {
   // PUT /api/array/config — Update array configuration
   router.put('/config', (req: Request, res: Response) => {
     try {
-      const config = arrayService.updateArrayConfig(req.body);
+      // Validate input fields
+      const updates: any = {};
+
+      if (req.body.name !== undefined) {
+        if (typeof req.body.name !== 'string' || req.body.name.length < 1 || req.body.name.length > 255) {
+          return res.status(400).json({ error: 'name must be a string between 1-255 chars' });
+        }
+        updates.name = req.body.name;
+      }
+
+      if (req.body.mode !== undefined) {
+        const validModes = ['parity', 'mirror', 'stripe', 'raid5', 'raid6', 'jbod'];
+        if (!validModes.includes(req.body.mode)) {
+          return res.status(400).json({ error: `mode must be one of: ${validModes.join(', ')}` });
+        }
+        updates.mode = req.body.mode;
+      }
+
+      if (req.body.auto_start !== undefined) {
+        if (typeof req.body.auto_start !== 'boolean') {
+          return res.status(400).json({ error: 'auto_start must be a boolean' });
+        }
+        updates.auto_start = req.body.auto_start;
+      }
+
+      if (req.body.spin_down_delay !== undefined) {
+        if (typeof req.body.spin_down_delay !== 'number' || req.body.spin_down_delay < 0) {
+          return res.status(400).json({ error: 'spin_down_delay must be a non-negative number (minutes)' });
+        }
+        updates.spin_down_delay = req.body.spin_down_delay;
+      }
+
+      if (req.body.reconstruct_write !== undefined) {
+        if (typeof req.body.reconstruct_write !== 'boolean') {
+          return res.status(400).json({ error: 'reconstruct_write must be a boolean' });
+        }
+        updates.reconstruct_write = req.body.reconstruct_write;
+      }
+
+      if (req.body.parity_check_schedule !== undefined) {
+        if (typeof req.body.parity_check_schedule !== 'string' || req.body.parity_check_schedule.length < 1) {
+          return res.status(400).json({ error: 'parity_check_schedule must be a non-empty string (cron format)' });
+        }
+        updates.parity_check_schedule = req.body.parity_check_schedule;
+      }
+
+      const config = arrayService.updateArrayConfig(updates);
       res.json(config);
     } catch (error) {
       res.status(400).json({ error: String(error) });

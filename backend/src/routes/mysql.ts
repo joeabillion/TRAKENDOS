@@ -208,7 +208,7 @@ export function createMysqlRouter(mysqlService: MysqlService): Router {
     try {
       const sqlContent = await mysqlService.exportDatabase(req.params.db);
       res.setHeader('Content-Type', 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${req.params.db}_$(Date.now()).sql"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${req.params.db}_${Date.now()}.sql"`);
       res.send(sqlContent);
     } catch (error) {
       res.status(500).json({ error: String(error) });

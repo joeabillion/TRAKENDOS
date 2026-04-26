@@ -719,7 +719,7 @@ Behavior guidelines:
         throw new Error(`Ollama returned ${res.status}: ${errText}`);
       }
 
-      const data = await res.json();
+      const data: any = await res.json();
       response = data.message?.content || data.response || '';
 
       this.logger.debug('MAYA', `Chat response (${response.length} chars)`);

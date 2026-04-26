@@ -76,7 +76,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get('/database/server/status')
+      const response = await api.get('/mysql/server/status')
       const d = response.data
       return {
         version: d.version || 'MariaDB',
@@ -100,7 +100,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      await api.post('/database/server/start')
+      await api.post('/mysql/server/start')
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start server'
@@ -115,7 +115,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      await api.post('/database/server/stop')
+      await api.post('/mysql/server/stop')
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to stop server'
@@ -130,7 +130,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      await api.post('/database/server/restart')
+      await api.post('/mysql/server/restart')
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to restart server'
@@ -146,7 +146,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get('/database/databases')
+      const response = await api.get('/mysql/databases')
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch databases'
@@ -161,7 +161,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      await api.post('/database/databases', { name, charset })
+      await api.post('/mysql/databases', { name, charset })
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create database'
@@ -243,7 +243,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.post('/database/query', { database, sql: query })
+      const response = await api.post('/mysql/query', { database, sql: query })
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Query execution failed'
@@ -259,7 +259,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get('/database/users')
+      const response = await api.get('/mysql/users')
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch users'
@@ -275,7 +275,7 @@ export const useMysql = () => {
       setLoading(true)
       setError(null)
       try {
-        await api.post('/database/users', { username, host, password })
+        await api.post('/mysql/users', { user: username, host, password })
         return true
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to create user'
@@ -292,7 +292,9 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      await api.delete(`/database/users/${username}@${host}`)
+      // Use encodeURIComponent to safely encode the user@host portion of the URL
+      const encodedUser = encodeURIComponent(`${username}@${host}`)
+      await api.delete(`/database/users/${encodedUser}`)
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to drop user'
@@ -307,7 +309,9 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get(`/database/users/${username}@${host}/grants`)
+      // Use encodeURIComponent to safely encode the user@host portion of the URL
+      const encodedUser = encodeURIComponent(`${username}@${host}`)
+      const response = await api.get(`/database/users/${encodedUser}/grants`)
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch grants'
@@ -323,7 +327,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get('/database/processes')
+      const response = await api.get('/mysql/processes')
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch process list'

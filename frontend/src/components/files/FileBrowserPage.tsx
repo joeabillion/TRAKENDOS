@@ -140,11 +140,14 @@ export const FileBrowserPage: React.FC = () => {
     } catch { /* ignore */ }
   }, [])
 
-  // Get display label for a drive (matches array page labeling)
+  // Get display label for a drive (persistent numbered names based on slot)
   const getDriveLabel = (drive: PhysicalDrive): string => {
-    if (drive.role === 'parity' || drive.role === 'parity2') return drive.role === 'parity2' ? 'Parity 2' : 'Parity'
+    // Use slot from DB for persistent naming
+    if (drive.role === 'parity') return 'Parity'
+    if (drive.role === 'parity2') return 'Parity 2'
     if (drive.role === 'cache') return 'Cache'
-    if (drive.role === 'data' && drive.slot) return `Disk ${drive.slot}`
+    if (drive.role === 'data' && drive.slot && drive.slot > 0) return `Disk ${drive.slot}`
+    // Fallback for unmounted/unassigned
     if (drive.mount_point === '/data') return 'Data'
     if (drive.mount_point) {
       const name = drive.mount_point.split('/').pop() || drive.device
@@ -498,15 +501,20 @@ export const FileBrowserPage: React.FC = () => {
             <Server size={14} /> Array Drives
           </div>
 
-          {/* Array-assigned drives only */}
+          {/* Array-assigned drives organized by role */}
           {(() => {
             const assignedDrives = allDrives.filter(d => d.role === 'parity' || d.role === 'parity2' || d.role === 'data' || d.role === 'cache')
-            const parityDrives = assignedDrives.filter(d => d.role === 'parity' || d.role === 'parity2')
+            const parityDrives = assignedDrives.filter(d => d.role === 'parity' || d.role === 'parity2').sort((a, b) => {
+              // Parity first, then Parity 2
+              if (a.role === 'parity') return -1
+              if (b.role === 'parity') return 1
+              return 0
+            })
             const dataDrives = assignedDrives.filter(d => d.role === 'data').sort((a: PhysicalDrive, b: PhysicalDrive) => (a.slot || 0) - (b.slot || 0))
             const cacheDrives = assignedDrives.filter(d => d.role === 'cache')
             const groups: { label: string; drives: PhysicalDrive[]; icon: React.ReactNode }[] = []
             if (parityDrives.length > 0) groups.push({ label: 'Parity', drives: parityDrives, icon: <Shield size={14} className="text-yellow-400" /> })
-            if (dataDrives.length > 0) groups.push({ label: 'Data', drives: dataDrives, icon: <Database size={14} className="text-trakend-accent" /> })
+            if (dataDrives.length > 0) groups.push({ label: 'Data Drives', drives: dataDrives, icon: <Database size={14} className="text-trakend-accent" /> })
             if (cacheDrives.length > 0) groups.push({ label: 'Cache', drives: cacheDrives, icon: <Zap size={14} className="text-purple-400" /> })
 
             return groups.map(group => (
@@ -529,9 +537,10 @@ export const FileBrowserPage: React.FC = () => {
                       onDragOver={isMounted && drive.mount_point ? (e: React.DragEvent) => handleDragOver(e, drive.mount_point!) : undefined}
                       onDragLeave={isMounted ? handleDragLeave : undefined}
                       onDrop={isMounted && drive.mount_point ? (e: React.DragEvent) => handleDrop(e, drive.mount_point!) : undefined}
+                      title={!isMounted ? 'Array must be running and drive must be mounted' : undefined}
                       className={clsx(
                         'w-full text-left px-3 py-2 border-b border-trakend-border/20 transition-colors',
-                        isMounted ? 'hover:bg-trakend-surface-light cursor-pointer' : 'opacity-50 cursor-default',
+                        isMounted ? 'hover:bg-trakend-surface-light cursor-pointer' : 'opacity-50 cursor-not-allowed',
                         isActive && 'bg-trakend-accent/10 border-l-2 border-l-trakend-accent',
                         isMounted && drive.mount_point && dropTarget === drive.mount_point && 'ring-1 ring-trakend-accent bg-trakend-accent/10'
                       )}
@@ -549,7 +558,8 @@ export const FileBrowserPage: React.FC = () => {
                               {drive.health === 'healthy' ? 'OK' : drive.health.toUpperCase()}
                             </span>
                           </div>
-                          <div className="text-[10px] text-trakend-text-secondary truncate">{drive.device} • {drive.size_human}</div>
+                          <div className="text-[10px] text-trakend-text-secondary truncate">{drive.model}</div>
+                          <div className="text-[10px] text-trakend-text-secondary truncate">{drive.size_human}</div>
                           {isMounted && drive.usage_bytes !== undefined && (
                             <div className="mt-1">
                               <div className="h-1 bg-trakend-dark rounded-full overflow-hidden">
@@ -561,7 +571,7 @@ export const FileBrowserPage: React.FC = () => {
                               <div className="text-[10px] text-trakend-text-secondary mt-0.5">{usagePercent}% used</div>
                             </div>
                           )}
-                          {!isMounted && <div className="text-[10px] text-red-400 mt-0.5">Not Mounted</div>}
+                          {!isMounted && <div className="text-[10px] text-red-400 mt-0.5">Array stopped</div>}
                         </div>
                       </div>
                     </button>
@@ -666,30 +676,33 @@ export const FileBrowserPage: React.FC = () => {
                     {listing.entries.map(entry => (
                       <tr
                         key={entry.path}
-                        draggable
-                        onDragStart={e => handleDragStart(e, entry)}
-                        onDragOver={entry.type === 'directory' ? (e => handleDragOver(e, entry.path)) : undefined}
-                        onDragLeave={entry.type === 'directory' ? handleDragLeave : undefined}
-                        onDrop={entry.type === 'directory' ? (e => handleDrop(e, entry.path)) : undefined}
+                        draggable={!entry.protected}
+                        onDragStart={!entry.protected ? (e => handleDragStart(e, entry)) : undefined}
+                        onDragOver={entry.type === 'directory' && !entry.protected ? (e => handleDragOver(e, entry.path)) : undefined}
+                        onDragLeave={entry.type === 'directory' && !entry.protected ? handleDragLeave : undefined}
+                        onDrop={entry.type === 'directory' && !entry.protected ? (e => handleDrop(e, entry.path)) : undefined}
                         className={clsx(
-                          'border-b border-trakend-border/30 hover:bg-trakend-surface-light/50 cursor-pointer group',
-                          selectedItems.has(entry.path) && 'bg-trakend-accent/10',
-                          dropTarget === entry.path && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
+                          'border-b border-trakend-border/30 group',
+                          !entry.protected && 'hover:bg-trakend-surface-light/50 cursor-pointer',
+                          entry.protected && 'opacity-50 cursor-default',
+                          selectedItems.has(entry.path) && !entry.protected && 'bg-trakend-accent/10',
+                          dropTarget === entry.path && !entry.protected && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
                         )}
-                        onDoubleClick={() => entry.type === 'directory' ? navigate(entry.path) : handlePreview(entry.path)}
-                        onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, entry }) }}
+                        onDoubleClick={() => !entry.protected && (entry.type === 'directory' ? navigate(entry.path) : handlePreview(entry.path))}
+                        onContextMenu={e => { e.preventDefault(); if (!entry.protected) setContextMenu({ x: e.clientX, y: e.clientY, entry }) }}
                       >
                         <td className="px-2 py-1.5">
                           <input
                             type="checkbox"
-                            checked={selectedItems.has(entry.path)}
-                            onChange={() => toggleSelect(entry.path)}
+                            checked={selectedItems.has(entry.path) && !entry.protected}
+                            onChange={() => !entry.protected && toggleSelect(entry.path)}
+                            disabled={entry.protected}
                             className="rounded"
                             onClick={e => e.stopPropagation()}
                           />
                         </td>
                         <td className="px-2 py-1.5">
-                          {renameTarget === entry.path ? (
+                          {renameTarget === entry.path && !entry.protected ? (
                             <input
                               value={renameValue}
                               onChange={e => setRenameValue(e.target.value)}
@@ -702,18 +715,17 @@ export const FileBrowserPage: React.FC = () => {
                               className="bg-trakend-dark text-trakend-text-primary text-sm px-2 py-0.5 rounded border border-trakend-accent outline-none"
                             />
                           ) : (
-                            <div className="flex items-center gap-2">
+                            <div className={clsx('flex items-center gap-2', entry.protected && 'opacity-50')}>
                               {getFileIcon(entry)}
                               <span className={clsx(
                                 'text-sm',
                                 entry.type === 'directory' ? 'text-trakend-accent font-medium' : 'text-trakend-text-primary',
-                                entry.hidden && 'opacity-60',
-                                entry.protected && 'opacity-50'
+                                entry.hidden && 'opacity-60'
                               )}>
                                 {entry.name}
                               </span>
                               {entry.type === 'symlink' && <span className="text-xs text-trakend-text-secondary">(link)</span>}
-                              {entry.protected && <Lock size={12} className="text-gray-500 flex-shrink-0" title="Protected system file" />}
+                              {entry.protected && <Lock size={12} className="text-gray-500 flex-shrink-0" title="System file — protected" />}
                             </div>
                           )}
                         </td>
@@ -740,11 +752,11 @@ export const FileBrowserPage: React.FC = () => {
                   {listing.entries.map(entry => (
                     <div
                       key={entry.path}
-                      draggable
-                      onDragStart={e => handleDragStart(e, entry)}
-                      onDragOver={entry.type === 'directory' ? (e => handleDragOver(e, entry.path)) : undefined}
-                      onDragLeave={entry.type === 'directory' ? handleDragLeave : undefined}
-                      onDrop={entry.type === 'directory' ? (e => handleDrop(e, entry.path)) : undefined}
+                      draggable={!entry.protected}
+                      onDragStart={!entry.protected ? (e => handleDragStart(e, entry)) : undefined}
+                      onDragOver={entry.type === 'directory' && !entry.protected ? (e => handleDragOver(e, entry.path)) : undefined}
+                      onDragLeave={entry.type === 'directory' && !entry.protected ? handleDragLeave : undefined}
+                      onDrop={entry.type === 'directory' && !entry.protected ? (e => handleDrop(e, entry.path)) : undefined}
                       className={clsx(
                         'p-3 rounded-lg text-center cursor-pointer hover:bg-trakend-surface-light group border border-transparent',
                         selectedItems.has(entry.path) && 'bg-trakend-accent/10 border-trakend-accent/30',

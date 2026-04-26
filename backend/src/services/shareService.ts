@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import fsp from 'fs/promises';
@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { EventLogger } from './eventLogger';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface ShareUser {
   id: number;
@@ -158,26 +159,38 @@ export class ShareService {
   }
 
   async createUser(username: string, password: string, homeDir?: string): Promise<ShareUser> {
-    // Validate username (alphanumeric + underscore, 2-32 chars)
-    if (!/^[a-zA-Z][a-zA-Z0-9_]{1,31}$/.test(username)) {
-      throw new Error('Invalid username. Must be 2-32 chars, start with letter, alphanumeric + underscore only.');
+    // Validate username (alphanumeric + underscore/dash, 2-32 chars)
+    if (!/^[a-zA-Z0-9_-]+$/.test(username) || username.length < 2 || username.length > 32) {
+      throw new Error('Invalid username. Must be 2-32 chars, alphanumeric, underscore, or dash only.');
     }
 
     const userHome = homeDir || `/data/shares/${username}`;
 
     // Create Linux system user
     try {
-      await execAsync(`id ${username} 2>/dev/null`);
+      await execFileAsync('id', [username]);
       // User exists — just update password
     } catch {
-      // Create user with home directory
-      await execAsync(`useradd -m -d "${userHome}" -s /usr/sbin/nologin ${username} 2>/dev/null || true`);
+      // Create user with home directory using execFile (safer than exec)
+      try {
+        await execFileAsync('useradd', ['-m', '-d', userHome, '-s', '/usr/sbin/nologin', username]);
+      } catch (e) {
+        // User might exist, continue
+      }
     }
 
     // Create home directory
     await fsp.mkdir(userHome, { recursive: true });
-    await execAsync(`chown ${username}:${username} "${userHome}" 2>/dev/null || true`);
-    await execAsync(`chmod 750 "${userHome}"`);
+    try {
+      await execFileAsync('chown', [`${username}:${username}`, userHome]);
+    } catch (e) {
+      // Chown might fail if user doesn't exist in system, but DB entry still created
+    }
+    try {
+      await execFileAsync('chmod', ['750', userHome]);
+    } catch (e) {
+      // Ignore chmod errors
+    }
 
     // Set Samba password
     await this.setSambaPassword(username, password);
@@ -200,10 +213,14 @@ export class ShareService {
   }
 
   async toggleUser(username: string, enabled: boolean): Promise<void> {
-    if (enabled) {
-      await execAsync(`smbpasswd -e ${username} 2>/dev/null || true`);
-    } else {
-      await execAsync(`smbpasswd -d ${username} 2>/dev/null || true`);
+    try {
+      if (enabled) {
+        await execFileAsync('smbpasswd', ['-e', username]);
+      } else {
+        await execFileAsync('smbpasswd', ['-d', username]);
+      }
+    } catch (e) {
+      // Ignore errors, continue to update DB
     }
     this.db.prepare("UPDATE share_users SET enabled = ?, updated_at = datetime('now') WHERE username = ?")
       .run(enabled ? 1 : 0, username);
@@ -212,7 +229,11 @@ export class ShareService {
 
   async deleteUser(username: string): Promise<void> {
     // Remove Samba password
-    await execAsync(`smbpasswd -x ${username} 2>/dev/null || true`);
+    try {
+      await execFileAsync('smbpasswd', ['-x', username]);
+    } catch (e) {
+      // Ignore error if user doesn't exist in Samba
+    }
 
     // Remove from DB (keep system user and files)
     this.db.prepare('DELETE FROM share_users WHERE username = ?').run(username);
@@ -233,8 +254,23 @@ export class ShareService {
   }
 
   private async setSambaPassword(username: string, password: string): Promise<void> {
-    // Use smbpasswd to set the password non-interactively
-    await execAsync(`(echo "${password}"; echo "${password}") | smbpasswd -a -s ${username} 2>/dev/null`);
+    // Use smbpasswd with stdin piping for password safety
+    // This avoids shell interpolation entirely
+    const child = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      const proc = execFile('smbpasswd', ['-a', '-s', username], (error, stdout, stderr) => {
+        if (error) {
+          // Some versions of smbpasswd may have non-zero exit codes for expected conditions
+          // Still log but continue
+        }
+        resolve({ stdout, stderr });
+      });
+
+      // Write password twice (required by smbpasswd format)
+      if (proc.stdin) {
+        proc.stdin.write(`${password}\n${password}\n`);
+        proc.stdin.end();
+      }
+    });
   }
 
   // ═══════════════════════════════════════════

@@ -1,11 +1,19 @@
 import React, { useState, useEffect } from 'react'
-import { ChevronDown, ChevronRight, Plus, Play, Download, Trash2, Power, RotateCw, Users, Activity } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, Play, Download, Trash2, Power, RotateCw, Users, Activity, Server } from 'lucide-react'
 import { useMysql, DatabaseInfo, TableSchema, QueryResult, ServerStatus, MySQLUser, ProcessListItem } from '../../hooks/useMysql'
+import api from '../../utils/api'
 
 type TabType = 'query' | 'browser' | 'users' | 'status'
 
 interface ExpandedDatabases {
   [key: string]: boolean
+}
+
+interface DatabaseContainer {
+  id: string
+  name: string
+  image: string
+  state: string
 }
 
 export const DatabasePage: React.FC = () => {
@@ -28,12 +36,28 @@ export const DatabasePage: React.FC = () => {
   const [newDatabaseName, setNewDatabaseName] = useState('')
   const [newUserForm, setNewUserForm] = useState({ username: '', host: 'localhost', password: '' })
   const [isServerRunning, setIsServerRunning] = useState(false)
+  const [dbContainers, setDbContainers] = useState<DatabaseContainer[]>([])
 
   // Load initial data
   useEffect(() => {
+    loadDatabaseContainers()
     loadDatabases()
     loadServerStatus()
   }, [])
+
+  const loadDatabaseContainers = async () => {
+    try {
+      const response = await api.get('/docker/containers?all=true')
+      const containers = response.data || []
+      const dbImages = containers.filter((c: any) => {
+        const image = (c.image || '').toLowerCase()
+        return image.includes('mysql') || image.includes('mariadb') || image.includes('postgres') || image.includes('mongo')
+      })
+      setDbContainers(dbImages)
+    } catch (error) {
+      console.error('Failed to load database containers:', error)
+    }
+  }
 
   const loadDatabases = async () => {
     const dbs = await mysql.listDatabases()
@@ -182,12 +206,33 @@ export const DatabasePage: React.FC = () => {
       <div className="flex h-full overflow-hidden">
         {/* Left Sidebar */}
         <div className="w-80 bg-trakend-surface border-r border-trakend-border flex flex-col overflow-hidden">
+          {/* Database Containers */}
+          {dbContainers.length > 0 && (
+            <div className="p-4 border-b border-trakend-border">
+              <div className="text-xs uppercase tracking-wide text-trakend-text-secondary font-semibold mb-2">Database Servers</div>
+              <div className="space-y-2">
+                {dbContainers.map((container) => (
+                  <div
+                    key={container.id}
+                    className="p-2 rounded-lg bg-trakend-dark text-xs text-trakend-text-secondary border border-trakend-border"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-mono">{container.name}</span>
+                      <div className={`w-2 h-2 rounded-full ${container.state === 'running' ? 'bg-trakend-success' : 'bg-trakend-error'}`}></div>
+                    </div>
+                    <div className="text-xs opacity-75">{container.image}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Server Status */}
           <div className="p-4 border-b border-trakend-border">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <div className={`w-3 h-3 rounded-full ${isServerRunning ? 'bg-trakend-success animate-pulse' : 'bg-trakend-error'}`}></div>
-                <span className="text-sm font-semibold text-trakend-text-primary">MariaDB</span>
+                <span className="text-sm font-semibold text-trakend-text-primary">Primary DB</span>
               </div>
               <span className="text-xs text-trakend-text-secondary">{isServerRunning ? 'Running' : 'Stopped'}</span>
             </div>

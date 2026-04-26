@@ -3,6 +3,7 @@ import Docker from 'dockerode';
 import * as jsYaml from 'js-yaml';
 import { AuthRequest } from '../middleware/auth';
 import { DockerService } from '../services/dockerService';
+import { WebSocket } from 'ws';
 
 export function createDockerRouter(dockerService: DockerService): Router {
   const router = Router();
@@ -246,6 +247,25 @@ export function createDockerRouter(dockerService: DockerService): Router {
     }
   });
 
+  router.put('/containers/:id/update', async (req: AuthRequest, res: Response) => {
+    try {
+      await dockerService.updateContainerSettings(req.params.id, req.body);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  router.post('/containers/:id/recreate', async (req: AuthRequest, res: Response) => {
+    try {
+      const { config } = req.body;
+      const newContainerId = await dockerService.recreateContainer(req.params.id, config);
+      res.json({ success: true, containerId: newContainerId });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
   router.post('/compose/validate', async (req: AuthRequest, res: Response) => {
     try {
       const { yaml } = req.body;
@@ -285,6 +305,134 @@ export function createDockerRouter(dockerService: DockerService): Router {
     }
   });
 
+  // Settings endpoints
+  router.get('/settings', async (req: AuthRequest, res: Response) => {
+    try {
+      const settings = await dockerService.getSettings();
+      res.json(settings);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  router.put('/settings', async (req: AuthRequest, res: Response) => {
+    try {
+      const settings = req.body;
+      await dockerService.updateSettings(settings);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // Storage migration
+  router.post('/storage/migrate', async (req: AuthRequest, res: Response) => {
+    try {
+      const newPath = req.body.newPath || req.query.newPath;
+      if (!newPath) {
+        res.status(400).json({ error: 'newPath required' });
+        return;
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      await dockerService.migrateStorage(newPath as string, (message) => {
+        res.write(`data: ${JSON.stringify({ message })}\n\n`);
+      });
+
+      res.end();
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // Backup endpoints
+  router.post('/backup', async (req: AuthRequest, res: Response) => {
+    try {
+      const destPath = (req.body.destPath || req.query.destPath || '/data/backups/docker/') as string;
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      const backupPath = await dockerService.fullBackup(destPath, (message) => {
+        res.write(`data: ${JSON.stringify({ message })}\n\n`);
+      });
+
+      res.write(`data: ${JSON.stringify({ complete: true, backupPath })}\n\n`);
+      res.end();
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // Restore endpoint
+  router.post('/restore', async (req: AuthRequest, res: Response) => {
+    try {
+      const backupPath = (req.body.backupPath || req.query.backupPath) as string;
+      if (!backupPath) {
+        res.status(400).json({ error: 'backupPath required' });
+        return;
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      await dockerService.fullRestore(backupPath, (message) => {
+        res.write(`data: ${JSON.stringify({ message })}\n\n`);
+      });
+
+      res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
+      res.end();
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // Force remove container
+  router.post('/containers/:id/force-remove', async (req: AuthRequest, res: Response) => {
+    try {
+      await dockerService.forceRemoveContainer(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // Delete volume
+  router.delete('/volumes/:name', async (req: AuthRequest, res: Response) => {
+    try {
+      await dockerService.removeVolume(req.params.name);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // System prune
+  router.post('/system/prune', async (req: AuthRequest, res: Response) => {
+    try {
+      const result = await dockerService.pruneSystem();
+      res.json({ success: true, ...result });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // Create exec session for container shell
+  router.post('/containers/:id/exec', async (req: AuthRequest, res: Response) => {
+    try {
+      const containerId = req.params.id;
+      const execId = await dockerService.createExecSession(containerId);
+      res.json({ execId });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
   return router;
 }
 
@@ -308,4 +456,72 @@ function parseMemoryValue(value: string): number {
     }
   }
   return 0;
+}
+
+export function setupDockerExecWebSocket(ws: WebSocket, execId: string, dockerService: DockerService): void {
+  try {
+    const execSession = dockerService.getExecSession(execId);
+    if (!execSession) {
+      ws.close(1008, 'Exec session not found');
+      return;
+    }
+
+    const exec = execSession.exec;
+
+    // Start the exec instance with hijacked stream
+    exec.start({ hijack: true, stdin: true, Tty: true }, (err: any, stream: any) => {
+      if (err) {
+        ws.close(1011, `Failed to start exec: ${err.message}`);
+        return;
+      }
+
+      // Pipe stream data to WebSocket
+      stream.on('data', (data: Buffer) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: 'terminal:data',
+              data: data.toString('utf-8'),
+            })
+          );
+        }
+      });
+
+      stream.on('error', (err: Error) => {
+        ws.close(1011, `Stream error: ${err.message}`);
+      });
+
+      stream.on('end', () => {
+        ws.close(1000);
+      });
+
+      // Handle WebSocket messages (input from terminal)
+      ws.on('message', (message: string) => {
+        try {
+          const parsed = JSON.parse(message);
+
+          if (parsed.type === 'terminal:input') {
+            stream.write(parsed.data);
+          } else if (parsed.type === 'terminal:resize') {
+            // Resize not directly supported for exec streams
+            // Could implement via SIGWINCH but requires raw mode
+          }
+        } catch {
+          // Invalid message, ignore
+        }
+      });
+
+      ws.on('close', () => {
+        stream.destroy();
+        dockerService.closeExecSession(execId);
+      });
+
+      ws.on('error', () => {
+        stream.destroy();
+        dockerService.closeExecSession(execId);
+      });
+    });
+  } catch (error) {
+    ws.close(1011, String(error));
+  }
 }

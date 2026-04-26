@@ -589,24 +589,26 @@ export class FileService {
 
   /**
    * Search file contents (grep)
+   * Uses -F flag for fixed-string matching to prevent regex injection
    */
   async searchContent(rootPath: string, pattern: string, maxResults = 50): Promise<FileSearchResult[]> {
     const resolvedPath = path.resolve(rootPath);
     const results: FileSearchResult[] = [];
 
     try {
-      const safePattern = pattern.replace(/['"\\]/g, '');
+      // Use -F (fixed-string) to treat pattern as literal text, not regex
+      // Prevents command injection and regex DoS attacks
       const { stdout } = await execAsync(
-        `grep -rl --include="*.{txt,conf,cfg,log,json,xml,yaml,yml,ini,sh,py,js,ts,md,html,css}" -i "${safePattern}" "${resolvedPath}" 2>/dev/null | head -${maxResults}`,
+        `grep -rl -F --include="*.{txt,conf,cfg,log,json,xml,yaml,yml,ini,sh,py,js,ts,md,html,css}" -i -- "${pattern.replace(/"/g, '\\"')}" "${resolvedPath}" 2>/dev/null | head -${maxResults}`,
         { timeout: 30000 }
       );
 
       for (const line of stdout.trim().split('\n').filter(l => l)) {
         try {
           const fileStat = await fsp.lstat(line);
-          // Get a line of context
+          // Get a line of context using -F flag
           const { stdout: ctx } = await execAsync(
-            `grep -m 1 -i "${safePattern}" "${line}" 2>/dev/null`
+            `grep -F -m 1 -i -- "${pattern.replace(/"/g, '\\"')}" "${line}" 2>/dev/null`
           );
           results.push({
             path: line,

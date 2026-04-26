@@ -74,7 +74,7 @@ export interface ArrayDriveAssignment {
   role: DriveRole;
   slot: number;
   added_at: number;
-  status: 'active' | 'missing' | 'disabled' | 'rebuilding' | 'new';
+  status: 'active' | 'missing' | 'disabled' | 'rebuilding' | 'new' | 'error';
 }
 
 export interface ParityOperation {
@@ -644,6 +644,29 @@ export class ArrayService {
 
     if (dataDrives.length === 0) throw new Error('No data drives assigned. Add at least one data drive.');
 
+    // Validate all assigned drives are present and log missing ones
+    const missingDrives = assignments.filter(a => {
+      const d = this.drives.get(a.drive_id);
+      return !d || !fs.existsSync(d.device);
+    });
+
+    if (missingDrives.length > 0) {
+      const missingList = missingDrives.map(d => d.drive_id).join(', ');
+      this.logger.warn('ARRAY', `Missing drives detected: ${missingList}`);
+
+      // Check if any missing drives are data drives
+      const missingDataDrives = missingDrives.filter(d => d.role === 'data');
+      if (missingDataDrives.length > 0) {
+        this.logger.warn('ARRAY', `Starting array in DEGRADED mode — ${missingDataDrives.length} data drive(s) missing`);
+      }
+
+      // Check if parity is missing
+      const missingParity = missingDrives.filter(d => d.role === 'parity' || d.role === 'parity2');
+      if (missingParity.length > 0) {
+        this.logger.warn('ARRAY', `NO PARITY PROTECTION — ${missingParity.length} parity drive(s) missing`);
+      }
+    }
+
     if (this.arrayConfig.mode === 'parity' && parityDrives.length === 0) {
       this.logger.warn('ARRAY', 'Starting array WITHOUT parity protection!');
     }
@@ -670,12 +693,16 @@ export class ArrayService {
       }
 
       // Mount all data drives
+      let successfulMounts = 0;
       for (const assignment of dataDrives) {
         const drive = this.drives.get(assignment.drive_id);
         // Use device from drives map if available, otherwise fall back to DB device path
         const devicePath = drive?.device || assignment.device;
         if (!devicePath || !fs.existsSync(devicePath)) {
           this.logger.error('ARRAY', `Drive ${assignment.drive_id} (slot ${assignment.slot}) device ${devicePath} not found — skipping`);
+          if (drive) drive.mount_point = undefined;
+          // Update status to missing if it was mounted
+          this.db.prepare('UPDATE array_drives SET status = ? WHERE drive_id = ?').run('missing', assignment.drive_id);
           continue;
         }
 
@@ -722,8 +749,14 @@ export class ArrayService {
           execSync(mountCmd, { timeout: 10000 });
           if (drive) drive.mount_point = mountPoint;
           this.logger.info('ARRAY', `Mounted ${partDev} (${fsType || 'auto'}) at ${mountPoint}`);
+          successfulMounts++;
         } catch (err) {
           this.logger.error('ARRAY', `Failed to mount ${partDev} at ${mountPoint}: ${err}`);
+          if (drive) {
+            drive.mount_point = undefined;
+            // Update drive status to error if mount failed
+            this.db.prepare('UPDATE array_drives SET status = ? WHERE drive_id = ?').run('error', assignment.drive_id);
+          }
         }
       }
 
@@ -827,32 +860,43 @@ export class ArrayService {
         }
       }
 
-      // Check for missing drives
-      const missingDrives = assignments.filter(a => {
-        const d = this.drives.get(a.drive_id);
-        return !d || !fs.existsSync(d.device);
-      });
-
-      if (missingDrives.length > 0) {
-        this.arrayConfig.state = 'degraded';
-        this.logger.warn('ARRAY', `Array started in DEGRADED mode — ${missingDrives.length} drive(s) missing`);
-      } else {
-        this.arrayConfig.state = 'running';
-        this.logger.info('ARRAY', `Array started. ${dataDrives.length} data drive(s), ${parityDrives.length} parity drive(s).`);
+      // Check if we have zero data drives mounted — this is a critical error
+      if (successfulMounts === 0) {
+        this.arrayConfig.state = 'error';
+        this.saveArrayConfig();
+        throw new Error('Failed to mount any data drives. Array startup aborted.');
       }
 
-      // Start Docker now that storage is mounted
-      try {
-        execSync('systemctl is-active docker >/dev/null 2>&1', { timeout: 5000 });
-        this.logger.info('ARRAY', 'Docker is already running');
-      } catch {
+      // Check for mount failures or missing drives
+      const unmountedDataDrives = dataDrives.filter(a => {
+        const d = this.drives.get(a.drive_id);
+        return !d?.mount_point;
+      });
+
+      if (unmountedDataDrives.length > 0 && successfulMounts > 0) {
+        this.arrayConfig.state = 'degraded';
+        this.logger.warn('ARRAY', `Array started in DEGRADED mode — ${unmountedDataDrives.length} data drive(s) not mounted`);
+      } else {
+        this.arrayConfig.state = 'running';
+        this.logger.info('ARRAY', `Array started. ${successfulMounts} data drive(s) mounted, ${parityDrives.length} parity drive(s).`);
+      }
+
+      // Start Docker only if we have at least one data drive mounted
+      if (successfulMounts > 0) {
         try {
-          this.logger.info('ARRAY', 'Starting Docker daemon...');
-          execSync('systemctl start docker', { timeout: 30000 });
-          this.logger.info('ARRAY', 'Docker started successfully');
-        } catch (err) {
-          this.logger.error('ARRAY', `Failed to start Docker: ${err}`);
+          execSync('systemctl is-active docker >/dev/null 2>&1', { timeout: 5000 });
+          this.logger.info('ARRAY', 'Docker is already running');
+        } catch {
+          try {
+            this.logger.info('ARRAY', 'Starting Docker daemon...');
+            execSync('systemctl start docker', { timeout: 30000 });
+            this.logger.info('ARRAY', 'Docker started successfully');
+          } catch (err) {
+            this.logger.error('ARRAY', `Failed to start Docker: ${err}`);
+          }
         }
+      } else {
+        this.logger.warn('ARRAY', 'Docker not started — no data drives mounted');
       }
 
       // Set up spin-down timers
@@ -1098,64 +1142,106 @@ export class ArrayService {
     return this.db.prepare('SELECT * FROM parity_history ORDER BY started_at DESC LIMIT 50').all();
   }
 
-  // Background parity operations (simplified — real implementation would do sector-by-sector XOR)
+  // Real block-level XOR parity sync
   private async runParitySync(): Promise<void> {
     if (!this.parityOp) return;
 
     const dataDrives = this.getAssignedDrives().filter(d => d.role === 'data');
-    const totalSize = dataDrives.reduce((sum, d) => {
+    const parityAssignment = this.getAssignedDrives().find(d => d.role === 'parity');
+
+    if (!parityAssignment || dataDrives.length === 0) {
+      throw new Error('No data or parity drives assigned');
+    }
+
+    const dataDriveDevices = dataDrives.map(d => {
       const drive = this.drives.get(d.drive_id);
-      return sum + (drive?.size_bytes || 0);
-    }, 0);
+      if (!drive) throw new Error(`Drive ${d.drive_id} not found`);
+      return drive.device;
+    });
 
-    // Simulate parity sync progress
+    const parityDrive = this.drives.get(parityAssignment.drive_id);
+    if (!parityDrive) throw new Error('Parity drive not found');
+
+    // Determine the largest data drive size for parity coverage
+    const maxDataSize = Math.max(...dataDrives.map(d => {
+      const drive = this.drives.get(d.drive_id);
+      return drive?.size_bytes || 0;
+    }));
+
+    const blockSize = 1024 * 1024; // 1MB blocks
+    const totalBlocks = Math.ceil(maxDataSize / blockSize);
+
     const startTime = Date.now();
-    const estimatedSpeed = 150 * 1024 * 1024; // 150MB/s typical
-    const estimatedDuration = totalSize / estimatedSpeed * 1000;
+    let bytesProcessed = 0;
+    let lastUpdateTime = startTime;
+    let lastBytesProcessed = 0;
 
-    const updateInterval = setInterval(() => {
-      if (!this.parityOp || this.parityOp.status !== 'running') {
-        clearInterval(updateInterval);
-        return;
-      }
-
-      const elapsed = Date.now() - startTime;
-      this.parityOp.progress = Math.min(99, (elapsed / estimatedDuration) * 100);
-      this.parityOp.speed_mbps = estimatedSpeed / (1024 * 1024);
-      this.parityOp.estimated_finish = startTime + estimatedDuration;
-    }, 5000);
-
-    // In production: actually XOR all data drive sectors to parity drive
-    // For now, we mark it as complete after the estimated time
-    // The real implementation would use `dd` and XOR operations
     try {
-      // Real implementation would be:
-      // 1. Read blocks from all data drives simultaneously
-      // 2. XOR them together
-      // 3. Write result to parity drive
-      // 4. For parity2: use different parity algorithm (Reed-Solomon)
+      // Process blocks sequentially
+      for (let blockNum = 0; blockNum < totalBlocks; blockNum++) {
+        if (!this.parityOp || this.parityOp.status !== 'running') {
+          return;
+        }
 
-      // Simulate completion
-      await new Promise<void>((resolve) => {
-        const checkComplete = setInterval(() => {
-          if (!this.parityOp || this.parityOp.status !== 'running') {
-            clearInterval(checkComplete);
-            clearInterval(updateInterval);
-            resolve();
-            return;
+        const blockOffset = BigInt(blockNum) * BigInt(blockSize);
+        const blockData = Buffer.alloc(blockSize, 0);
+
+        // Read blocks from all data drives and XOR them
+        for (let i = 0; i < dataDriveDevices.length; i++) {
+          const device = dataDriveDevices[i];
+          const driveSize = this.drives.get(dataDrives[i].drive_id)?.size_bytes || 0;
+
+          // Only XOR if block is within this drive's size
+          if (blockOffset < BigInt(driveSize)) {
+            try {
+              const readData = await this.readBlock(device, blockOffset, blockSize);
+              // XOR operation
+              for (let j = 0; j < readData.length; j++) {
+                blockData[j] ^= readData[j];
+              }
+            } catch (err) {
+              // If we can't read, assume zeros (which is valid for parity)
+              this.logger.warn('ARRAY', `Failed to read block from ${device}: ${err}`);
+            }
           }
-          if (this.parityOp.progress >= 99) {
-            clearInterval(checkComplete);
-            clearInterval(updateInterval);
-            resolve();
-          }
-        }, 5000);
-      });
+        }
+
+        // Write parity block
+        try {
+          await this.writeBlock(parityDrive.device, blockOffset, blockData);
+        } catch (err) {
+          this.logger.error('ARRAY', `Failed to write parity block: ${err}`);
+          throw err;
+        }
+
+        bytesProcessed = (blockNum + 1) * blockSize;
+
+        // Update progress every 5 seconds
+        const now = Date.now();
+        if (now - lastUpdateTime >= 5000) {
+          const elapsedSeconds = (now - startTime) / 1000;
+          const bytesDiff = bytesProcessed - lastBytesProcessed;
+          const timeDiff = (now - lastUpdateTime) / 1000;
+          const currentSpeed = bytesDiff / timeDiff / (1024 * 1024); // MB/s
+
+          this.parityOp.progress = Math.min(99, (bytesProcessed / maxDataSize) * 100);
+          this.parityOp.speed_mbps = currentSpeed;
+          this.parityOp.estimated_finish = startTime + (maxDataSize / (bytesProcessed / elapsedSeconds) * 1000);
+
+          lastUpdateTime = now;
+          lastBytesProcessed = bytesProcessed;
+        }
+      }
 
       if (this.parityOp && this.parityOp.status === 'running') {
         this.parityOp.status = 'completed';
         this.parityOp.progress = 100;
         this.parityOp.completed_at = Date.now();
+
+        const totalElapsed = this.parityOp.completed_at - this.parityOp.started_at;
+        const elapsedSeconds = totalElapsed / 1000;
+        // Guard against division by zero: if elapsed time is 0, set speed to 0
+        this.parityOp.speed_mbps = elapsedSeconds > 0 ? (bytesProcessed / (1024 * 1024)) / elapsedSeconds : 0;
 
         this.arrayConfig.parity_state = 'valid';
         this.arrayConfig.last_parity_check = Date.now();
@@ -1169,7 +1255,7 @@ export class ArrayService {
         `).run(
           this.parityOp.id, this.parityOp.type, 'completed',
           this.parityOp.started_at, this.parityOp.completed_at,
-          Math.round((this.parityOp.completed_at - this.parityOp.started_at) / 1000),
+          Math.round(totalElapsed / 1000),
           this.parityOp.errors_found, this.parityOp.errors_corrected,
           this.parityOp.speed_mbps
         );
@@ -1177,7 +1263,6 @@ export class ArrayService {
         this.logger.info('ARRAY', 'Parity sync completed successfully');
       }
     } catch (error) {
-      clearInterval(updateInterval);
       if (this.parityOp) {
         this.parityOp.status = 'failed';
         this.arrayConfig.parity_state = 'invalid';
@@ -1188,35 +1273,151 @@ export class ArrayService {
   }
 
   private async runParityCheck(correct: boolean): Promise<void> {
-    // Similar structure to sync but reads and verifies instead
     if (!this.parityOp) return;
 
+    const dataDrives = this.getAssignedDrives().filter(d => d.role === 'data');
+    const parityAssignment = this.getAssignedDrives().find(d => d.role === 'parity');
+
+    if (!parityAssignment || dataDrives.length === 0) {
+      throw new Error('No data or parity drives assigned');
+    }
+
+    const dataDriveDevices = dataDrives.map(d => {
+      const drive = this.drives.get(d.drive_id);
+      if (!drive) throw new Error(`Drive ${d.drive_id} not found`);
+      return drive.device;
+    });
+
+    const parityDrive = this.drives.get(parityAssignment.drive_id);
+    if (!parityDrive) throw new Error('Parity drive not found');
+
+    const maxDataSize = Math.max(...dataDrives.map(d => {
+      const drive = this.drives.get(d.drive_id);
+      return drive?.size_bytes || 0;
+    }));
+
+    const blockSize = 1024 * 1024; // 1MB blocks
+    const totalBlocks = Math.ceil(maxDataSize / blockSize);
+
     const startTime = Date.now();
-    // Parity checks are typically faster than syncs
-    const estimatedDuration = 3600000; // 1 hour estimate
+    let bytesProcessed = 0;
+    let lastUpdateTime = startTime;
+    let lastBytesProcessed = 0;
+    let errorsFound = 0;
+    let errorsCorrected = 0;
 
-    const updateInterval = setInterval(() => {
-      if (!this.parityOp || this.parityOp.status !== 'running') {
-        clearInterval(updateInterval);
-        return;
+    try {
+      // Check blocks sequentially
+      for (let blockNum = 0; blockNum < totalBlocks; blockNum++) {
+        if (!this.parityOp || this.parityOp.status !== 'running') {
+          return;
+        }
+
+        const blockOffset = BigInt(blockNum) * BigInt(blockSize);
+        const blockData = Buffer.alloc(blockSize, 0);
+
+        // XOR all data blocks
+        for (let i = 0; i < dataDriveDevices.length; i++) {
+          const device = dataDriveDevices[i];
+          const driveSize = this.drives.get(dataDrives[i].drive_id)?.size_bytes || 0;
+
+          if (blockOffset < BigInt(driveSize)) {
+            try {
+              const readData = await this.readBlock(device, blockOffset, blockSize);
+              for (let j = 0; j < readData.length; j++) {
+                blockData[j] ^= readData[j];
+              }
+            } catch (err) {
+              this.logger.warn('ARRAY', `Failed to read block from ${device}: ${err}`);
+            }
+          }
+        }
+
+        // Read actual parity block
+        let parityBlock: Buffer;
+        try {
+          parityBlock = await this.readBlock(parityDrive.device, blockOffset, blockSize);
+        } catch (err) {
+          this.logger.error('ARRAY', `Failed to read parity block: ${err}`);
+          errorsFound++;
+          parityBlock = Buffer.alloc(blockSize, 0);
+        }
+
+        // Compare
+        const matches = blockData.equals(parityBlock);
+        if (!matches) {
+          errorsFound++;
+
+          if (correct) {
+            // Correct by writing the correct parity
+            try {
+              await this.writeBlock(parityDrive.device, blockOffset, blockData);
+              errorsCorrected++;
+            } catch (err) {
+              this.logger.error('ARRAY', `Failed to correct parity block: ${err}`);
+            }
+          }
+        }
+
+        bytesProcessed = (blockNum + 1) * blockSize;
+
+        // Update progress every 5 seconds
+        const now = Date.now();
+        if (now - lastUpdateTime >= 5000) {
+          const elapsedSeconds = (now - startTime) / 1000;
+          const bytesDiff = bytesProcessed - lastBytesProcessed;
+          const timeDiff = (now - lastUpdateTime) / 1000;
+          const currentSpeed = bytesDiff / timeDiff / (1024 * 1024); // MB/s
+
+          this.parityOp.progress = Math.min(99, (bytesProcessed / maxDataSize) * 100);
+          this.parityOp.speed_mbps = currentSpeed;
+          this.parityOp.estimated_finish = startTime + (maxDataSize / (bytesProcessed / elapsedSeconds) * 1000);
+          this.parityOp.errors_found = errorsFound;
+          this.parityOp.errors_corrected = errorsCorrected;
+
+          lastUpdateTime = now;
+          lastBytesProcessed = bytesProcessed;
+        }
       }
-      const elapsed = Date.now() - startTime;
-      this.parityOp.progress = Math.min(99, (elapsed / estimatedDuration) * 100);
-      this.parityOp.speed_mbps = 200; // Typical check speed
-    }, 5000);
 
-    // Simulate completion
-    await new Promise(resolve => setTimeout(resolve, estimatedDuration));
-    clearInterval(updateInterval);
+      if (this.parityOp && this.parityOp.status === 'running') {
+        this.parityOp.status = 'completed';
+        this.parityOp.progress = 100;
+        this.parityOp.completed_at = Date.now();
+        this.parityOp.errors_found = errorsFound;
+        this.parityOp.errors_corrected = errorsCorrected;
 
-    if (this.parityOp && this.parityOp.status === 'running') {
-      this.parityOp.status = 'completed';
-      this.parityOp.progress = 100;
-      this.parityOp.completed_at = Date.now();
-      this.arrayConfig.parity_state = 'valid';
-      this.arrayConfig.last_parity_check = Date.now();
-      this.saveArrayConfig();
-      this.logger.info('ARRAY', `Parity check completed. ${this.parityOp.errors_found} errors found.`);
+        const totalElapsed = this.parityOp.completed_at - this.parityOp.started_at;
+        const elapsedSeconds = totalElapsed / 1000;
+        // Guard against division by zero: if elapsed time is 0, set speed to 0
+        this.parityOp.speed_mbps = elapsedSeconds > 0 ? (bytesProcessed / (1024 * 1024)) / elapsedSeconds : 0;
+
+        this.arrayConfig.parity_state = 'valid';
+        this.arrayConfig.last_parity_check = Date.now();
+        this.saveArrayConfig();
+
+        // Record in history
+        this.db.prepare(`
+          INSERT INTO parity_history (id, type, status, started_at, completed_at,
+            duration_seconds, errors_found, errors_corrected, speed_avg_mbps)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          this.parityOp.id, this.parityOp.type, correct ? 'corrected' : 'completed',
+          this.parityOp.started_at, this.parityOp.completed_at,
+          Math.round(totalElapsed / 1000),
+          errorsFound, errorsCorrected,
+          this.parityOp.speed_mbps
+        );
+
+        this.logger.info('ARRAY', `Parity check completed. ${errorsFound} errors found${correct ? `, ${errorsCorrected} corrected` : ''}.`);
+      }
+    } catch (error) {
+      if (this.parityOp) {
+        this.parityOp.status = 'failed';
+        this.arrayConfig.parity_state = 'invalid';
+        this.saveArrayConfig();
+      }
+      throw error;
     }
   }
 
@@ -1226,42 +1427,197 @@ export class ArrayService {
     const drive = this.drives.get(driveId);
     if (!drive) return;
 
+    const dataDrives = this.getAssignedDrives().filter(d => d.role === 'data');
+    const parityAssignment = this.getAssignedDrives().find(d => d.role === 'parity');
+
+    if (!parityAssignment) {
+      throw new Error('No parity drive assigned');
+    }
+
+    // Get the OTHER data drives (not the one being rebuilt)
+    const otherDataDrives = dataDrives.filter(d => d.drive_id !== driveId);
+    if (otherDataDrives.length === 0) {
+      throw new Error('Cannot rebuild with only one data drive');
+    }
+
+    const otherDataDevices = otherDataDrives.map(d => {
+      const drv = this.drives.get(d.drive_id);
+      if (!drv) throw new Error(`Drive ${d.drive_id} not found`);
+      return drv.device;
+    });
+
+    const parityDrive = this.drives.get(parityAssignment.drive_id);
+    if (!parityDrive) throw new Error('Parity drive not found');
+
     this.logger.info('ARRAY', `Rebuilding drive ${drive.device}...`);
 
-    // In production: XOR all OTHER data drives + parity to reconstruct the missing drive's data
-    // The reconstructed data is written to the replacement drive
+    const blockSize = 1024 * 1024; // 1MB blocks
+    const totalBlocks = Math.ceil(drive.size_bytes / blockSize);
 
     const startTime = Date.now();
-    const estimatedDuration = (drive.size_bytes / (100 * 1024 * 1024)) * 1000; // ~100MB/s
+    let bytesProcessed = 0;
+    let lastUpdateTime = startTime;
+    let lastBytesProcessed = 0;
 
-    const updateInterval = setInterval(() => {
-      if (!this.parityOp || this.parityOp.status !== 'running') {
-        clearInterval(updateInterval);
-        return;
+    try {
+      // Rebuild blocks sequentially
+      for (let blockNum = 0; blockNum < totalBlocks; blockNum++) {
+        if (!this.parityOp || this.parityOp.status !== 'running') {
+          return;
+        }
+
+        const blockOffset = BigInt(blockNum) * BigInt(blockSize);
+        const reconstructedBlock = Buffer.alloc(blockSize, 0);
+
+        // XOR all OTHER data blocks with parity to reconstruct
+        for (const device of otherDataDevices) {
+          try {
+            const blockData = await this.readBlock(device, blockOffset, blockSize);
+            for (let j = 0; j < blockData.length; j++) {
+              reconstructedBlock[j] ^= blockData[j];
+            }
+          } catch (err) {
+            this.logger.warn('ARRAY', `Failed to read block from ${device}: ${err}`);
+          }
+        }
+
+        // XOR with parity
+        try {
+          const parityBlock = await this.readBlock(parityDrive.device, blockOffset, blockSize);
+          for (let j = 0; j < parityBlock.length; j++) {
+            reconstructedBlock[j] ^= parityBlock[j];
+          }
+        } catch (err) {
+          this.logger.error('ARRAY', `Failed to read parity block: ${err}`);
+          throw err;
+        }
+
+        // Write reconstructed data to the replacement drive
+        try {
+          await this.writeBlock(drive.device, blockOffset, reconstructedBlock);
+        } catch (err) {
+          this.logger.error('ARRAY', `Failed to write reconstructed block: ${err}`);
+          throw err;
+        }
+
+        bytesProcessed = (blockNum + 1) * blockSize;
+
+        // Update progress every 5 seconds
+        const now = Date.now();
+        if (now - lastUpdateTime >= 5000) {
+          const elapsedSeconds = (now - startTime) / 1000;
+          const bytesDiff = bytesProcessed - lastBytesProcessed;
+          const timeDiff = (now - lastUpdateTime) / 1000;
+          const currentSpeed = bytesDiff / timeDiff / (1024 * 1024); // MB/s
+
+          this.parityOp.progress = Math.min(99, (bytesProcessed / drive.size_bytes) * 100);
+          this.parityOp.speed_mbps = currentSpeed;
+          this.parityOp.estimated_finish = startTime + (drive.size_bytes / (bytesProcessed / elapsedSeconds) * 1000);
+
+          lastUpdateTime = now;
+          lastBytesProcessed = bytesProcessed;
+        }
       }
-      const elapsed = Date.now() - startTime;
-      this.parityOp.progress = Math.min(99, (elapsed / estimatedDuration) * 100);
-      this.parityOp.speed_mbps = 100;
-      this.parityOp.estimated_finish = startTime + estimatedDuration;
-    }, 5000);
 
-    await new Promise(resolve => setTimeout(resolve, estimatedDuration));
-    clearInterval(updateInterval);
+      if (this.parityOp && this.parityOp.status === 'running') {
+        this.parityOp.status = 'completed';
+        this.parityOp.progress = 100;
+        this.parityOp.completed_at = Date.now();
 
-    if (this.parityOp && this.parityOp.status === 'running') {
-      this.parityOp.status = 'completed';
-      this.parityOp.progress = 100;
-      this.parityOp.completed_at = Date.now();
+        const totalElapsed = this.parityOp.completed_at - this.parityOp.started_at;
+        const elapsedSeconds = totalElapsed / 1000;
+        // Guard against division by zero: if elapsed time is 0, set speed to 0
+        this.parityOp.speed_mbps = elapsedSeconds > 0 ? (bytesProcessed / (1024 * 1024)) / elapsedSeconds : 0;
 
-      // Update drive status
-      this.db.prepare('UPDATE array_drives SET status = ? WHERE drive_id = ?').run('active', driveId);
+        // Update drive status
+        this.db.prepare('UPDATE array_drives SET status = ? WHERE drive_id = ?').run('active', driveId);
 
-      this.arrayConfig.state = 'running';
-      this.arrayConfig.parity_state = 'valid';
-      this.saveArrayConfig();
+        this.arrayConfig.state = 'running';
+        this.arrayConfig.parity_state = 'valid';
+        this.saveArrayConfig();
 
-      this.logger.info('ARRAY', `Drive rebuild completed for ${drive.device}`);
+        // Record in history
+        this.db.prepare(`
+          INSERT INTO parity_history (id, type, status, started_at, completed_at,
+            duration_seconds, errors_found, errors_corrected, speed_avg_mbps, target_drive)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          this.parityOp.id, this.parityOp.type, 'completed',
+          this.parityOp.started_at, this.parityOp.completed_at,
+          Math.round(totalElapsed / 1000),
+          0, 0,
+          this.parityOp.speed_mbps,
+          driveId
+        );
+
+        this.logger.info('ARRAY', `Drive rebuild completed for ${drive.device}`);
+      }
+    } catch (error) {
+      if (this.parityOp) {
+        this.parityOp.status = 'failed';
+        this.arrayConfig.parity_state = 'invalid';
+        this.saveArrayConfig();
+      }
+      throw error;
     }
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Block-level I/O for parity operations
+  // ──────────────────────────────────────────────────────
+
+  private readBlock(device: string, offset: bigint, size: number): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const buffer = Buffer.alloc(size);
+      fs.open(device, 'r', (err, fd) => {
+        if (err) return reject(err);
+
+        // Note: Converting bigint to Number for fs.read position parameter.
+        // This is safe for drives up to ~8PB (2^53 bytes). For larger drives, consider using fs.promises.read()
+        // which natively accepts bigint positions.
+        const position = Number(offset);
+        fs.read(fd, buffer, 0, size, position, (err, bytesRead, data) => {
+          // Always close fd in finally to prevent leaks
+          fs.close(fd, (closeErr) => {
+            if (closeErr) {
+              this.logger.warn('ARRAY', `Failed to close file descriptor: ${closeErr}`);
+            }
+          });
+
+          if (err) return reject(err);
+
+          // If we read fewer bytes than requested, pad with zeros
+          if (bytesRead < size) {
+            const paddedBuffer = Buffer.alloc(size, 0);
+            data.copy(paddedBuffer, 0, 0, bytesRead);
+            resolve(paddedBuffer);
+          } else {
+            resolve(data);
+          }
+        });
+      });
+    });
+  }
+
+  private writeBlock(device: string, offset: bigint, data: Buffer): Promise<void> {
+    return new Promise((resolve, reject) => {
+      fs.open(device, 'r+', (err, fd) => {
+        if (err) return reject(err);
+
+        const position = Number(offset);
+        fs.write(fd, data, 0, data.length, position, (err) => {
+          // Always close fd to prevent leaks, even on error
+          fs.close(fd, (closeErr) => {
+            if (closeErr) {
+              this.logger.warn('ARRAY', `Failed to close file descriptor: ${closeErr}`);
+            }
+          });
+
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+    });
   }
 
   // ──────────────────────────────────────────────────────
@@ -1430,6 +1786,55 @@ export class ArrayService {
       usage_percent: totalCapacity > 0 ? Math.round((usedCapacity / totalCapacity) * 100) : 0,
       parity_operation: this.parityOp || null,
       shares: this.getShares(),
+    };
+  }
+
+  getArrayStatus(): any {
+    const assignments = this.getAssignedDrives();
+
+    const driveStatus = assignments.map(assignment => {
+      const drive = this.drives.get(assignment.drive_id);
+      const isPresent = drive && fs.existsSync(drive.device);
+      const isMounted = drive?.mount_point ? true : false;
+
+      return {
+        drive_id: assignment.drive_id,
+        device: drive?.device || assignment.device,
+        model: drive?.model || 'Unknown',
+        role: assignment.role,
+        slot: assignment.slot,
+        serial: drive?.serial || assignment.serial,
+        present: isPresent,
+        mounted: isMounted,
+        mount_point: drive?.mount_point || null,
+        status: assignment.status,
+        health: drive?.health || 'unknown',
+        size_human: drive?.size_human || 'Unknown',
+      };
+    });
+
+    const dataDrives = driveStatus.filter(d => d.role === 'data');
+    const parityDrives = driveStatus.filter(d => d.role === 'parity' || d.role === 'parity2');
+
+    const missingDataDrives = dataDrives.filter(d => !d.present);
+    const unmountedDataDrives = dataDrives.filter(d => d.present && !d.mounted);
+    const missingParityDrives = parityDrives.filter(d => !d.present);
+
+    const isDegraded = missingDataDrives.length > 0 || unmountedDataDrives.length > 0 || missingParityDrives.length > 0;
+    const hasNoParity = missingParityDrives.length === parityDrives.length && parityDrives.length > 0;
+
+    return {
+      array_state: this.arrayConfig.state,
+      is_degraded: isDegraded,
+      has_no_parity: hasNoParity,
+      data_drives_mounted: dataDrives.filter(d => d.mounted).length,
+      data_drives_total: dataDrives.length,
+      parity_drives_present: parityDrives.filter(d => d.present).length,
+      parity_drives_total: parityDrives.length,
+      missing_drives: driveStatus.filter(d => !d.present).map(d => ({ drive_id: d.drive_id, device: d.device, role: d.role })),
+      unmounted_drives: driveStatus.filter(d => d.present && !d.mounted).map(d => ({ drive_id: d.drive_id, device: d.device, role: d.role })),
+      errored_drives: driveStatus.filter(d => d.status === 'error').map(d => ({ drive_id: d.drive_id, device: d.device, role: d.role })),
+      all_drives: driveStatus,
     };
   }
 }
