@@ -33,9 +33,7 @@ export const DockerPage: React.FC = () => {
     getVolumes,
     removeVolume,
     fullBackup,
-    _fullRestore,
     pruneSystem,
-    _forceRemoveContainer,
     migrateStorage,
   } = useDocker()
   const [containers, setContainers] = useState<Container[]>([])
