@@ -322,13 +322,21 @@ export class ArrayService {
         const devPath = `/dev/${dev.name}`;
         const smart = await this.getSmartData(devPath);
 
-        // Check existing assignment
-        const assignment = this.db.prepare(
-          'SELECT * FROM array_drives WHERE device = ? OR serial = ?'
-        ).get(devPath, dev.serial || '') as any;
+        // Check existing assignment — prefer device path match over serial match
+        // (USB enclosures can report the same serial for multiple drives)
+        let assignment = this.db.prepare(
+          'SELECT * FROM array_drives WHERE device = ?'
+        ).get(devPath) as any;
+        if (!assignment && dev.serial) {
+          // Only fall back to serial match if no other drive already claimed this serial for a different device
+          const serialMatch = this.db.prepare(
+            'SELECT * FROM array_drives WHERE serial = ? AND device = ?'
+          ).get(dev.serial, devPath) as any;
+          if (serialMatch) assignment = serialMatch;
+        }
 
         const drive: PhysicalDrive = {
-          id: dev.serial || `drive-${dev.name}`,
+          id: assignment?.drive_id || dev.serial || `drive-${dev.name}`,
           device: devPath,
           model: (dev.model || 'Unknown').trim(),
           serial: (dev.serial || '').trim(),
