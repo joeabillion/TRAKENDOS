@@ -53,6 +53,7 @@ export const AppStore: React.FC<AppStoreProps> = ({ onDeployApp }) => {
     return matchesCategory && matchesSearch
   }), [searchQuery, selectedCategory])
 
+
   const categoryCount = useMemo(() => {
     const counts: Record<string, number> = { All: APP_TEMPLATES.length }
     for (const app of APP_TEMPLATES) {
@@ -143,7 +144,7 @@ export const AppStore: React.FC<AppStoreProps> = ({ onDeployApp }) => {
         <AppDeployDialog
           app={selectedApp}
           onClose={() => setSelectedApp(null)}
-          onDeploy={async (containerName, config) => {
+          onDeploy={async (_containerName, _config) => {
             // This will be handled by the parent component
             onDeployApp?.(selectedApp)
             setSelectedApp(null)

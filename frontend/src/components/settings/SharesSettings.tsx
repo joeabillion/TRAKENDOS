@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import {
-  Users, FolderOpen, Plus, Trash2, Edit3, Power, PowerOff,
+  Users, FolderOpen, Plus, Trash2, Power, PowerOff,
   RefreshCw, AlertCircle, Check, Eye, EyeOff, Shield, Network
 } from 'lucide-react'
 import api from '../../utils/api'

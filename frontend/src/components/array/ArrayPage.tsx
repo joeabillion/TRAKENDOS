@@ -2,12 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react'
 import {
   HardDrive, Shield, ShieldCheck, ShieldAlert, ShieldOff,
   Play, Square, RefreshCw, Plus, Trash2, AlertTriangle,
-  CheckCircle, XCircle, Clock, Zap, ThermometerSun,
-  Database, FolderOpen, Settings, ChevronDown, ChevronRight,
-  Activity, RotateCcw, Search, Server
+  CheckCircle, ThermometerSun,
+  FolderOpen, Settings, ChevronDown, ChevronRight,
+  RotateCcw, Search, Server
 } from 'lucide-react'
 import api from '../../utils/api'
-import { formatBytes, formatDuration } from '../../utils/formatters'
 
 // ─── Types ────────────────────────────────────────────
 

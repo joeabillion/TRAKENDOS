@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { ChevronDown, ChevronRight, Plus, Play, Download, Trash2, Power, RotateCw, Users, Activity, Server } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, Play, Download, Trash2, Power, RotateCw } from 'lucide-react'
 import { useMysql, DatabaseInfo, TableSchema, QueryResult, ServerStatus, MySQLUser, ProcessListItem } from '../../hooks/useMysql'
 import api from '../../utils/api'
 

@@ -11,7 +11,7 @@ interface AppDeployDialogProps {
 
 interface DeployConfig {
   containerName: string
-  ports: Array<{ hostPort: number; containerPort: number; protocol: string }>
+  ports: Array<{ hostPort?: number; containerPort: number; protocol: string }>
   environment: Array<{ name: string; value: string }>
   volumes: Array<{ hostPath: string; containerPath: string }>
   resources?: { cpuCores?: number; memoryMb?: number }

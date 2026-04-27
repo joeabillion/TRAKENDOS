@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Save, RotateCcw } from 'lucide-react'
+import { Save } from 'lucide-react'
 import { ThemeSettings } from './ThemeSettings'
 import { SharesSettings } from './SharesSettings'
 

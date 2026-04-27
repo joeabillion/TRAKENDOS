@@ -34,7 +34,6 @@ export const TerminalPage: React.FC = () => {
         background: getComputedStyle(document.documentElement).getPropertyValue('--color-dark').trim() || '#1a1d2e',
         foreground: '#e5e5e5',
         cursor: getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim() || '#2dd4bf',
-        selection: 'rgba(45, 212, 191, 0.2)',
       },
       fontFamily: '"JetBrains Mono", "Monaco", "Courier New", monospace',
       fontSize: 13,

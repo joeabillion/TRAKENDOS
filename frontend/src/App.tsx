@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import { ThemeProvider } from './context/ThemeContext'
 import { WebSocketProvider } from './context/WebSocketContext'
@@ -47,7 +47,7 @@ function AppLayout() {
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>('booting')
-  const [token, setToken] = useState<string | null>(null)
+  const [, setToken] = useState<string | null>(null)
 
   // Check for existing session on mount
   useEffect(() => {

@@ -21,7 +21,8 @@
     "isolatedModules": true,
     "jsxImportSource": "react",
     "jsx": "react-jsx",
-    "noEmit": true
+    "noEmit": true,
+    "types": ["vite/client"]
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]

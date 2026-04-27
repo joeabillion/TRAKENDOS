@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { ChevronDown, ChevronRight, Plus, Trash2, Power, RotateCw, Play, Settings, Edit2, Save, X } from 'lucide-react'
+import { ChevronDown, Plus, Trash2, Power, RotateCw, Play, Edit2, Save, X } from 'lucide-react'
 import { useShares, SambaShare, ShareUser, SambaStatus } from '../../hooks/useShares'
 import api from '../../utils/api'
 

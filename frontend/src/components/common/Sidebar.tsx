@@ -11,7 +11,6 @@ import {
   ScrollText,
   Zap,
   Settings,
-  AlertCircle,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useWebSocket } from '../../context/WebSocketContext'

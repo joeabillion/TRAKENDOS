@@ -725,7 +725,7 @@ export const FileBrowserPage: React.FC = () => {
                                 {entry.name}
                               </span>
                               {entry.type === 'symlink' && <span className="text-xs text-trakend-text-secondary">(link)</span>}
-                              {entry.protected && <Lock size={12} className="text-gray-500 flex-shrink-0" title="System file — protected" />}
+                              {entry.protected && <Lock size={12} className="text-gray-500 flex-shrink-0" />}
                             </div>
                           )}
                         </td>
