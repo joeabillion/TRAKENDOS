@@ -542,8 +542,23 @@ export class ArrayService {
 
   private getMountPoint(device: string): string | undefined {
     try {
-      const output = execSync(`findmnt -n -o TARGET "${device}" 2>/dev/null || findmnt -n -o TARGET "${device}1" 2>/dev/null`, { encoding: 'utf-8' });
-      return output.trim() || undefined;
+      // Check whole device first
+      try {
+        const direct = execSync(`findmnt -n -o TARGET "${device}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+        if (direct) return direct;
+      } catch { /* not mounted as whole device */ }
+
+      // Check partitions via lsblk — handles all naming conventions:
+      // SATA: /dev/sda1, NVMe: /dev/nvme0n1p1, MMC: /dev/mmcblk0p1, etc.
+      try {
+        const firstPart = execSync(`lsblk -ln -o NAME "${device}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
+        if (firstPart) {
+          const partMount = execSync(`findmnt -n -o TARGET "/dev/${firstPart}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+          if (partMount) return partMount;
+        }
+      } catch { /* no partitions or not mounted */ }
+
+      return undefined;
     } catch {
       return undefined;
     }

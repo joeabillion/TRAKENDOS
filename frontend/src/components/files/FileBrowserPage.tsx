@@ -99,6 +99,7 @@ export const FileBrowserPage: React.FC = () => {
   const [currentPath, setCurrentPath] = useState('/')
   const [listing, setListing] = useState<DirectoryListing | null>(null)
   const [allDrives, setAllDrives] = useState<PhysicalDrive[]>([])
+  const [arrayState, setArrayState] = useState<string>('stopped')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
@@ -135,8 +136,12 @@ export const FileBrowserPage: React.FC = () => {
 
   const loadDrives = useCallback(async () => {
     try {
-      const res = await api.get('/array/drives')
-      setAllDrives(res.data || [])
+      const [drivesRes, statusRes] = await Promise.all([
+        api.get('/array/drives'),
+        api.get('/array/summary').catch(() => null)
+      ])
+      setAllDrives(drivesRes.data || [])
+      if (statusRes?.data?.config?.state) setArrayState(statusRes.data.config.state)
     } catch { /* ignore */ }
   }, [])
 
@@ -537,7 +542,7 @@ export const FileBrowserPage: React.FC = () => {
                       onDragOver={isMounted && drive.mount_point ? (e: React.DragEvent) => handleDragOver(e, drive.mount_point!) : undefined}
                       onDragLeave={isMounted ? handleDragLeave : undefined}
                       onDrop={isMounted && drive.mount_point ? (e: React.DragEvent) => handleDrop(e, drive.mount_point!) : undefined}
-                      title={!isMounted ? 'Array must be running and drive must be mounted' : undefined}
+                      title={!isMounted ? (arrayState === 'running' || arrayState === 'degraded' ? 'Drive is not mounted' : 'Start the array to access drives') : undefined}
                       className={clsx(
                         'w-full text-left px-3 py-2 border-b border-trakend-border/20 transition-colors',
                         isMounted ? 'hover:bg-trakend-surface-light cursor-pointer' : 'opacity-50 cursor-not-allowed',
@@ -571,7 +576,7 @@ export const FileBrowserPage: React.FC = () => {
                               <div className="text-[10px] text-trakend-text-secondary mt-0.5">{usagePercent}% used</div>
                             </div>
                           )}
-                          {!isMounted && <div className="text-[10px] text-red-400 mt-0.5">Array stopped</div>}
+                          {!isMounted && <div className="text-[10px] text-red-400 mt-0.5">{arrayState === 'running' || arrayState === 'degraded' ? 'Not mounted' : 'Array stopped'}</div>}
                         </div>
                       </div>
                     </button>
