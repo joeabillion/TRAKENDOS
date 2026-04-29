@@ -896,9 +896,21 @@ export class ArrayService {
         return !d?.mount_point;
       });
 
-      if (unmountedDataDrives.length > 0 && successfulMounts > 0) {
-        this.arrayConfig.state = 'degraded';
-        this.logger.warn('ARRAY', `Array started in DEGRADED mode — ${unmountedDataDrives.length} data drive(s) not mounted`);
+      if (unmountedDataDrives.length > 0) {
+        // ALL data drives must be mounted — no partial starts allowed
+        this.arrayConfig.state = 'error';
+        this.saveArrayConfig();
+        const unmountedList = unmountedDataDrives.map(d => `${d.drive_id} (slot ${d.slot})`).join(', ');
+        this.logger.error('ARRAY', `Array startup FAILED — ${unmountedDataDrives.length} data drive(s) not mounted: ${unmountedList}`);
+        // Unmount any drives that did mount since we're aborting
+        for (const assignment of dataDrives) {
+          const d = this.drives.get(assignment.drive_id);
+          if (d?.mount_point) {
+            try { execSync(`umount "${d.mount_point}" 2>/dev/null`, { timeout: 5000 }); } catch { /* ignore */ }
+            d.mount_point = undefined;
+          }
+        }
+        throw new Error(`Array startup aborted — all data drives must be mounted. Failed: ${unmountedList}`);
       } else {
         this.arrayConfig.state = 'running';
         this.logger.info('ARRAY', `Array started. ${successfulMounts} data drive(s) mounted, ${parityDrives.length} parity drive(s).`);
