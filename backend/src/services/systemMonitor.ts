@@ -2,8 +2,73 @@
 import si from 'systeminformation';
 import { WebSocketServer, WebSocket } from 'ws';
 import { EventLogger } from './eventLogger';
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
 import Docker from 'dockerode';
+
+/**
+ * Safe replacement for si.processes() — the systeminformation library spawns
+ * `ps` with a giant argv that triggers E2BIG ("Argument list too long") on
+ * systems running many processes (Docker hosts especially). The error is
+ * thrown synchronously inside spawn() so .catch() on the returned promise
+ * does NOT catch it; it bubbles up as an uncaughtException and crashes the
+ * service. This implementation uses a tight, bounded `ps` invocation that
+ * cannot exceed kernel limits.
+ */
+function safeListProcesses(): Promise<{
+  all: number;
+  running: number;
+  blocked: number;
+  sleeping: number;
+  list: Array<{ pid: number; name: string; cpu: number; mem: number; memRss: number; state: string; user: string }>;
+}> {
+  return new Promise((resolve) => {
+    const empty = { all: 0, running: 0, blocked: 0, sleeping: 0, list: [] as any[] };
+    try {
+      // Bounded command: get top 30 by CPU, fixed columns. argv is short, output capped.
+      exec(
+        "ps -eo pid,user,pcpu,pmem,rss,stat,comm --no-headers --sort=-pcpu | head -n 30",
+        { maxBuffer: 256 * 1024, timeout: 5000 },
+        (err, stdout) => {
+          if (err || !stdout) return resolve(empty);
+          try {
+            const list: any[] = [];
+            let running = 0, blocked = 0, sleeping = 0;
+            const lines = stdout.split('\n');
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              // Format: PID USER %CPU %MEM RSS STAT COMM
+              const parts = trimmed.split(/\s+/);
+              if (parts.length < 7) continue;
+              const state = parts[5] || '';
+              if (state.startsWith('R')) running++;
+              else if (state.startsWith('D')) blocked++;
+              else if (state.startsWith('S')) sleeping++;
+              list.push({
+                pid: parseInt(parts[0], 10) || 0,
+                name: parts.slice(6).join(' '),
+                cpu: parseFloat(parts[2]) || 0,
+                mem: parseFloat(parts[3]) || 0,
+                memRss: (parseInt(parts[4], 10) || 0) * 1024,
+                state,
+                user: parts[1] || '',
+              });
+            }
+            // Total process count via a separate cheap call
+            exec('ps -e --no-headers | wc -l', { timeout: 2000 }, (_e, countOut) => {
+              const all = parseInt((countOut || '0').trim(), 10) || list.length;
+              resolve({ all, running, blocked, sleeping, list });
+            });
+          } catch {
+            resolve(empty);
+          }
+        }
+      );
+    } catch {
+      resolve(empty);
+    }
+  });
+}
 
 export interface CPUInfo {
   model: string;
@@ -152,7 +217,7 @@ export class SystemMonitor {
       // Gather extra data in parallel
       const [cpuTemp, processes, disksIO, networkStats, dockerContainers, sensors] = await Promise.all([
         si.cpuTemperature().catch(() => ({ main: 0, cores: [], max: 0 })),
-        si.processes().catch(() => ({ all: 0, running: 0, blocked: 0, sleeping: 0, list: [] })),
+        safeListProcesses(),
         si.disksIO().catch(() => ({ rIO_sec: 0, wIO_sec: 0, rWaitTime: 0, wWaitTime: 0 })),
         si.networkStats().catch(() => []),
         this.getDockerContainerDetails(),

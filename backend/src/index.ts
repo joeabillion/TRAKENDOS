@@ -84,7 +84,9 @@ mayaService.setSettingsModel(settingsModel);
 // Create Express app
 const app: Express = express();
 const server = createServer(app);
-const wss = new WebSocketServer({ server });
+// noServer: true — we manually handle the upgrade event below so the
+// WebSocket server doesn't double-register an upgrade listener.
+const wss = new WebSocketServer({ noServer: true });
 
 // Middleware
 app.use(helmet({
@@ -222,7 +224,9 @@ app.use('/api/shares', authMiddleware, createSharesRouter(shareService));
 
 // WebSocket server for real-time updates
 wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-  const url = req.url || '';
+  const rawUrl = req.url || '';
+  // Strip query string so trailing ?token=... doesn't end up in sessionId
+  const url = rawUrl.split('?')[0];
   logger.debug('SYSTEM', `WebSocket connection: ${url}`);
 
   // System stats stream — accept both /ws and /ws/stats
@@ -315,13 +319,29 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   });
 });
 
-// Handle WebSocket upgrade — guard against duplicate calls with the same socket
+// Handle WebSocket upgrade — single registration thanks to noServer:true above.
+// Reject unknown paths and guard against destroyed/errored sockets to keep the
+// process stable under flaky clients (mobile networks, Cloudflare tunnel hiccups).
 server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
   if (socket.destroyed) return;
   socket.on('error', () => {}); // prevent unhandled error crashes
-  wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
-    wss.emit('connection', ws, request);
-  });
+
+  const url = (request.url || '').split('?')[0];
+  // Only accept WebSocket upgrades on known /ws[/...] endpoints
+  if (url !== '/ws' && !url.startsWith('/ws/')) {
+    try { socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); } catch {}
+    socket.destroy();
+    return;
+  }
+
+  try {
+    wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      wss.emit('connection', ws, request);
+    });
+  } catch (err) {
+    // Never let an upgrade error crash the server
+    try { socket.destroy(); } catch {}
+  }
 });
 
 // Serve frontend static files in production
@@ -442,5 +462,4 @@ const start = async () => {
 
 start();
 
-// Export for testing
-export { app, server, db, logger };
+// E
