@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import * as cron from 'node-cron';
 import { EventLogger } from './eventLogger';
 import { MayaService } from './mayaService';
+import { DEFAULT_CONFIG } from '../config/default';
 
 export interface UpdateInfo {
   currentVersion: string;
@@ -34,6 +35,7 @@ export class UpdateService {
   private cronJob?: cron.ScheduledTask;
   private lastCheckResult?: UpdateInfo;
   private lastCheckTime: number = 0;
+  private lastNotifiedHash: string = '';
 
   constructor(db: Database.Database, logger: EventLogger, repoPath: string, gitUrl: string) {
     this.db = db;
@@ -43,25 +45,15 @@ export class UpdateService {
     this.initializeTable();
   }
 
-  /**
-   * Set Maya reference so update service can send notifications through her
-   */
   setMayaService(maya: MayaService): void {
     this.mayaService = maya;
   }
 
-  /**
-   * Start daily automatic update checks.
-   * Runs once on startup, then every 24 hours (configurable).
-   */
   startDailyCheck(intervalHours: number = 24): void {
-    // Run immediately on startup (after 30 second delay to let services initialize)
     setTimeout(() => {
       this.performScheduledCheck();
     }, 30000);
 
-    // Schedule recurring check — every N hours
-    // Cron: "0 */N * * *" means at minute 0 of every Nth hour
     const cronExpr = `0 */${Math.max(1, intervalHours)} * * *`;
     this.cronJob = cron.schedule(cronExpr, () => {
       this.performScheduledCheck();
@@ -70,9 +62,6 @@ export class UpdateService {
     this.logger.info('SYSTEM', `Update auto-check scheduled every ${intervalHours} hours`);
   }
 
-  /**
-   * Stop the daily check cron job
-   */
   stopDailyCheck(): void {
     if (this.cronJob) {
       this.cronJob.stop();
@@ -81,17 +70,25 @@ export class UpdateService {
     }
   }
 
-  /**
-   * Performs a scheduled check and sends Maya notification if update available
-   */
   private async performScheduledCheck(): Promise<void> {
     try {
       const updateInfo = await this.checkForUpdates();
 
       if (updateInfo.hasUpdate && this.mayaService) {
+        let latestHash = '';
+        try {
+          const branch = this.getCurrentBranch();
+          latestHash = this.getFullHash(`origin/${branch}`);
+        } catch {}
+
+        if (latestHash && latestHash === this.lastNotifiedHash) {
+          this.logger.debug('SYSTEM', 'Update available but already notified - skipping duplicate notification');
+          return;
+        }
+
         const commitSummary = updateInfo.commits
           .slice(0, 5)
-          .map((c) => `• ${c.message}`)
+          .map((c) => `- ${c.message}`)
           .join('\n');
 
         const moreCount = Math.max(0, updateInfo.commits.length - 5);
@@ -105,6 +102,7 @@ export class UpdateService {
           { type: 'optimize', target: 'update' }
         );
 
+        this.lastNotifiedHash = latestHash;
         this.logger.info('SYSTEM', `Update available: ${updateInfo.currentVersion} -> ${updateInfo.latestVersion}`);
       } else {
         this.logger.debug('SYSTEM', 'No updates available');
@@ -130,9 +128,29 @@ export class UpdateService {
     `);
   }
 
+  private getCurrentBranch(): string {
+    try {
+      const branch = execSync(`git -C "${this.repoPath}" rev-parse --abbrev-ref HEAD`, {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        timeout: 5000,
+      }).trim();
+      if (branch && branch !== 'HEAD') return branch;
+    } catch {}
+    return DEFAULT_CONFIG.GIT.BRANCH || 'main';
+  }
+
+  private getFullHash(ref: string): string {
+    return execSync(`git -C "${this.repoPath}" rev-parse "${ref}"`, {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      timeout: 10000,
+    }).trim();
+  }
+
   async getCurrentVersion(): Promise<string> {
     try {
-      const tag = execSync(`git -C ${this.repoPath} describe --tags --always`, {
+      const tag = execSync(`git -C "${this.repoPath}" describe --tags --always`, {
         encoding: 'utf-8',
       }).trim();
       return tag || '1.0.000';
@@ -143,7 +161,7 @@ export class UpdateService {
 
   private isGitRepo(): boolean {
     try {
-      execSync(`git -C ${this.repoPath} rev-parse --is-inside-work-tree`, {
+      execSync(`git -C "${this.repoPath}" rev-parse --is-inside-work-tree`, {
         encoding: 'utf-8',
         stdio: 'pipe',
         timeout: 5000,
@@ -156,9 +174,8 @@ export class UpdateService {
 
   async checkForUpdates(): Promise<UpdateInfo> {
     try {
-      // Bail early if not a git repo — avoids fatal errors on fresh installs
       if (!this.isGitRepo()) {
-        this.logger.debug('SYSTEM', 'No git repository found — skipping update check');
+        this.logger.debug('SYSTEM', 'No git repository found - skipping update check');
         return {
           currentVersion: '1.0.000',
           latestVersion: '1.0.000',
@@ -168,40 +185,67 @@ export class UpdateService {
         };
       }
 
-      const currentVersion = await this.getCurrentVersion();
-
-      // Fetch latest info from remote
-      execSync(`git -C ${this.repoPath} fetch origin`, { stdio: 'pipe', timeout: 30000 });
-
-      let latestVersion = currentVersion;
-      let latestTag = '';
+      const branch = this.getCurrentBranch();
+      const remoteRef = `origin/${branch}`;
 
       try {
-        latestTag = execSync(`git -C ${this.repoPath} describe --tags origin/main --abbrev=0`, {
-          encoding: 'utf-8',
-        }).trim();
-        latestVersion = latestTag;
-      } catch {
-        const latestCommit = execSync(`git -C ${this.repoPath} rev-parse origin/main`, {
-          encoding: 'utf-8',
-        }).trim();
-        latestVersion = latestCommit.substring(0, 8);
+        execSync(`git -C "${this.repoPath}" fetch origin`, { stdio: 'pipe', timeout: 30000 });
+      } catch (fetchErr) {
+        this.logger.debug('SYSTEM', `git fetch failed (offline?): ${fetchErr}`);
+        if (this.lastCheckResult) return this.lastCheckResult;
       }
 
-      const hasUpdate = currentVersion !== latestVersion;
-      const commits: UpdateInfo['commits'] = [];
+      let currentHash = '';
+      let latestHash = '';
+      try {
+        currentHash = this.getFullHash('HEAD');
+        latestHash = this.getFullHash(remoteRef);
+      } catch (refErr) {
+        this.logger.debug('SYSTEM', `Failed to resolve refs: ${refErr}`);
+        const cur = await this.getCurrentVersion();
+        const noUpdate: UpdateInfo = {
+          currentVersion: cur,
+          latestVersion: cur,
+          hasUpdate: false,
+          commits: [],
+          lastChecked: Date.now(),
+        };
+        this.lastCheckTime = noUpdate.lastChecked;
+        this.lastCheckResult = noUpdate;
+        return noUpdate;
+      }
 
+      const hasUpdate = currentHash !== latestHash;
+
+      const currentVersion = await this.getCurrentVersion();
+      let latestVersion = currentVersion;
+      let latestTag = '';
+      if (hasUpdate) {
+        try {
+          latestTag = execSync(`git -C "${this.repoPath}" describe --tags "${remoteRef}" --abbrev=0`, {
+            encoding: 'utf-8',
+            stdio: 'pipe',
+          }).trim();
+          latestVersion = latestTag || latestHash.substring(0, 7);
+        } catch {
+          latestVersion = latestHash.substring(0, 7);
+        }
+      } else {
+        latestVersion = currentVersion;
+      }
+
+      const commits: UpdateInfo['commits'] = [];
       if (hasUpdate) {
         try {
           const commitLog = execSync(
-            `git -C ${this.repoPath} log ${currentVersion}..origin/main --oneline --format='%H|%s|%an|%ai'`,
-            { encoding: 'utf-8' }
+            `git -C "${this.repoPath}" log ${currentHash}..${latestHash} --oneline --format='%H|%s|%an|%ai'`,
+            { encoding: 'utf-8', stdio: 'pipe' }
           );
           const lines = commitLog.trim().split('\n').filter((l) => l);
           for (const line of lines) {
             const parts = line.split('|');
             commits.push({
-              hash: (parts[0] || '').substring(0, 8),
+              hash: (parts[0] || '').substring(0, 7),
               message: parts[1] || '',
               author: parts[2] || '',
               date: parts[3] || '',
@@ -222,9 +266,11 @@ export class UpdateService {
         lastChecked: this.lastCheckTime,
       };
 
-      this.logger.info('SYSTEM', `Update check completed. Current: ${currentVersion}, Latest: ${latestVersion}`, {
-        hasUpdate,
-      });
+      this.logger.info(
+        'SYSTEM',
+        `Update check completed (branch=${branch}). Current: ${currentVersion} (${currentHash.substring(0, 7)}), Latest: ${latestVersion} (${latestHash.substring(0, 7)})`,
+        { hasUpdate }
+      );
 
       return this.lastCheckResult;
     } catch (error) {
@@ -233,16 +279,10 @@ export class UpdateService {
     }
   }
 
-  /**
-   * Get the cached result of the last update check (avoids hitting git repeatedly)
-   */
   getLastCheckResult(): UpdateInfo | null {
     return this.lastCheckResult || null;
   }
 
-  /**
-   * Get timestamp of last update check
-   */
   getLastCheckTime(): number {
     return this.lastCheckTime;
   }
@@ -274,7 +314,6 @@ export class UpdateService {
         to: updateInfo.latestVersion,
       });
 
-      // Notify Maya
       if (this.mayaService) {
         this.mayaService.createNotification(
           'info',
@@ -284,21 +323,22 @@ export class UpdateService {
         );
       }
 
-      // Pull latest changes
-      execSync(`git -C ${this.repoPath} pull origin main`, { stdio: 'pipe', timeout: 120000 });
+      const branch = this.getCurrentBranch();
+      execSync(`git -C "${this.repoPath}" pull --ff-only origin "${branch}"`, {
+        stdio: 'pipe',
+        timeout: 120000,
+      });
 
-      // Rebuild backend
       try {
-        execSync(`npm install --prefix ${this.repoPath}/backend`, { stdio: 'pipe', timeout: 120000 });
-        execSync(`npm run build --prefix ${this.repoPath}/backend`, { stdio: 'pipe', timeout: 120000 });
+        execSync(`npm install --prefix "${this.repoPath}/backend"`, { stdio: 'pipe', timeout: 120000 });
+        execSync(`npm run build --prefix "${this.repoPath}/backend"`, { stdio: 'pipe', timeout: 120000 });
       } catch (buildErr) {
         this.logger.warn('SYSTEM', `Post-update build step had issues: ${buildErr}`);
       }
 
-      // Rebuild frontend
       try {
-        execSync(`npm install --prefix ${this.repoPath}/frontend`, { stdio: 'pipe', timeout: 120000 });
-        execSync(`npm run build --prefix ${this.repoPath}/frontend`, { stdio: 'pipe', timeout: 120000 });
+        execSync(`npm install --prefix "${this.repoPath}/frontend"`, { stdio: 'pipe', timeout: 120000 });
+        execSync(`npm run build --prefix "${this.repoPath}/frontend"`, { stdio: 'pipe', timeout: 120000 });
       } catch (buildErr) {
         this.logger.warn('SYSTEM', `Frontend rebuild had issues: ${buildErr}`);
       }
@@ -312,7 +352,6 @@ export class UpdateService {
         to: updateInfo.latestVersion,
       });
 
-      // Schedule restart (systemd will auto-restart the service)
       setTimeout(() => {
         process.exit(0);
       }, 3000);

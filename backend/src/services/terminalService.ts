@@ -35,7 +35,7 @@ interface InternalSession extends TerminalSession {
 export class TerminalService {
   private sessions: Map<string, InternalSession> = new Map();
   private logger: EventLogger;
-  private readonly IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 min idle
+  private readonly IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour idle
   private readonly MAX_LIFETIME_MS = 8 * 60 * 60 * 1000; // 8 hour hard cap
   private readonly HISTORY_DIR = '/var/lib/trakend/terminal-history';
   private cachedShell: { cmd: string; args: string[]; env: Record<string, string> } | null = null;
