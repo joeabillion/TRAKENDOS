@@ -6,6 +6,8 @@ import * as os from 'os';
 import { EventLogger } from './eventLogger';
 import { v4 as uuidv4 } from 'uuid';
 
+export type ShellChoice = 'auto' | 'bash' | 'pwsh' | 'sh' | 'zsh';
+
 export interface TerminalSession {
   id: string;
   name: string;
@@ -13,6 +15,13 @@ export interface TerminalSession {
   created_at: number;
   last_activity: number;
   shell: string;
+}
+
+interface ResolvedShell {
+  cmd: string;
+  args: string[];
+  env: Record<string, string>;
+  label: string;
 }
 
 interface InternalSession extends TerminalSession {
@@ -25,12 +34,14 @@ interface InternalSession extends TerminalSession {
  * Trakend OS terminal service.
  *
  * Goals:
- *   - PowerShell-first: use pwsh (PowerShell Core) if installed, otherwise
- *     bash with a PowerShell-styled prompt and familiar aliases (ls, cls,
- *     dir, type, gci, etc.) so the experience is consistent.
- *   - Persistent command history per session.
- *   - Safe lifecycle: every session has a max lifetime and an idle timer,
- *     handlers are detached cleanly to avoid leaks.
+ *   - Default to bash so users can paste standard bash one-liners (with `&&`,
+ *     `\` line continuations, `for/do/done` loops, heredocs, etc.) without
+ *     friction. The bash prompt is styled like PowerShell so it still feels
+ *     modern, and most familiar PowerShell aliases are exposed (ls/dir/cls/gci).
+ *   - Allow opting into pwsh (PowerShell Core) per session for users who want
+ *     real cmdlets — pass shell: 'pwsh' when creating the session.
+ *   - Persistent shared command history per shell type at /var/lib/trakend.
+ *   - Safe lifecycle: idle timeout, hard 8h lifetime cap, leak-free pty cleanup.
  */
 export class TerminalService {
   private sessions: Map<string, InternalSession> = new Map();
@@ -38,7 +49,8 @@ export class TerminalService {
   private readonly IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour idle
   private readonly MAX_LIFETIME_MS = 8 * 60 * 60 * 1000; // 8 hour hard cap
   private readonly HISTORY_DIR = '/var/lib/trakend/terminal-history';
-  private cachedShell: { cmd: string; args: string[]; env: Record<string, string> } | null = null;
+  private resolvedShells: Map<ShellChoice, ResolvedShell> = new Map();
+  private cachedAvailable: { value: ShellChoice; label: string; cmd: string }[] | null = null;
 
   constructor(logger: EventLogger) {
     this.logger = logger;
@@ -51,62 +63,127 @@ export class TerminalService {
         fs.mkdirSync(this.HISTORY_DIR, { recursive: true, mode: 0o700 });
       }
     } catch (err) {
-      // Fall back to a tmp location if /var/lib isn't writable
       this.logger.debug('SYSTEM', `terminal history dir unavailable: ${err}`);
     }
   }
 
-  /**
-   * Detect the best shell once and cache it. Prefer pwsh -> bash -> sh.
-   */
-  private resolveShell(): { cmd: string; args: string[]; env: Record<string, string> } {
-    if (this.cachedShell) return this.cachedShell;
+  private which(cmd: string): string | null {
+    try {
+      const out = execSync(`command -v ${cmd} 2>/dev/null`, { encoding: 'utf8' }).trim();
+      return out || null;
+    } catch {
+      return null;
+    }
+  }
 
-    const env: Record<string, string> = {
+  private baseEnv(): Record<string, string> {
+    return {
       ...(process.env as Record<string, string>),
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       LANG: process.env.LANG || 'en_US.UTF-8',
       LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
     };
-
-    // 1) PowerShell Core if installed
-    try {
-      const pwshPath = execSync('command -v pwsh 2>/dev/null', { encoding: 'utf8' }).trim();
-      if (pwshPath) {
-        const profilePath = this.writePwshProfile();
-        this.cachedShell = {
-          cmd: pwshPath,
-          args: ['-NoLogo', '-NoExit', '-File', profilePath],
-          env: { ...env, POWERSHELL_TELEMETRY_OPTOUT: '1' },
-        };
-        return this.cachedShell;
-      }
-    } catch {}
-
-    // 2) Bash with a PowerShell-styled rc file
-    try {
-      const bashPath = execSync('command -v bash 2>/dev/null', { encoding: 'utf8' }).trim();
-      if (bashPath) {
-        const rcPath = this.writeBashRc();
-        this.cachedShell = {
-          cmd: bashPath,
-          args: ['--rcfile', rcPath, '-i'],
-          env,
-        };
-        return this.cachedShell;
-      }
-    } catch {}
-
-    // 3) Fallback to sh
-    this.cachedShell = { cmd: '/bin/sh', args: [], env };
-    return this.cachedShell;
   }
 
   /**
-   * Write a temporary PowerShell profile that gives a Trakend-themed prompt
-   * and helpful aliases. We write to a per-process location so a fresh
-   * profile is generated on each backend restart (picks up version bumps).
+   * Return the list of shells installed on this host, for a future shell-picker
+   * UI in the frontend. 'auto' is always first.
+   */
+  listAvailableShells(): { value: ShellChoice; label: string; cmd: string }[] {
+    if (this.cachedAvailable) return this.cachedAvailable;
+    const out: { value: ShellChoice; label: string; cmd: string }[] = [
+      { value: 'auto', label: 'Default (Bash)', cmd: 'auto' },
+    ];
+    const bash = this.which('bash');
+    if (bash) out.push({ value: 'bash', label: 'Bash (PowerShell-styled)', cmd: bash });
+    const pwsh = this.which('pwsh');
+    if (pwsh) out.push({ value: 'pwsh', label: 'PowerShell Core', cmd: pwsh });
+    const zsh = this.which('zsh');
+    if (zsh) out.push({ value: 'zsh', label: 'Zsh', cmd: zsh });
+    if (this.which('sh')) out.push({ value: 'sh', label: 'Sh', cmd: '/bin/sh' });
+    this.cachedAvailable = out;
+    return out;
+  }
+
+  /**
+   * Resolve a shell choice to a runnable command. Cached per choice so the
+   * profile/rcfile is written once per backend run.
+   */
+  private resolveShell(choice: ShellChoice = 'auto'): ResolvedShell {
+    const cached = this.resolvedShells.get(choice);
+    if (cached) return cached;
+
+    const env = this.baseEnv();
+
+    // 'auto' means: prefer bash for paste-friendliness, then pwsh, then sh.
+    if (choice === 'auto') {
+      const bash = this.which('bash');
+      if (bash) return this.buildBash(bash, env, 'auto');
+      const pwsh = this.which('pwsh');
+      if (pwsh) return this.buildPwsh(pwsh, env, 'auto');
+      const r: ResolvedShell = { cmd: '/bin/sh', args: [], env, label: 'sh' };
+      this.resolvedShells.set('auto', r);
+      return r;
+    }
+
+    if (choice === 'bash') {
+      const bash = this.which('bash');
+      if (bash) return this.buildBash(bash, env, 'bash');
+    }
+
+    if (choice === 'pwsh') {
+      const pwsh = this.which('pwsh');
+      if (pwsh) return this.buildPwsh(pwsh, env, 'pwsh');
+    }
+
+    if (choice === 'zsh') {
+      const zsh = this.which('zsh');
+      if (zsh) {
+        const r: ResolvedShell = { cmd: zsh, args: ['-i'], env, label: 'zsh' };
+        this.resolvedShells.set('zsh', r);
+        return r;
+      }
+    }
+
+    if (choice === 'sh') {
+      const r: ResolvedShell = { cmd: '/bin/sh', args: [], env, label: 'sh' };
+      this.resolvedShells.set('sh', r);
+      return r;
+    }
+
+    // Requested shell not installed - fall back to auto
+    this.logger.warn('SYSTEM', `Requested shell '${choice}' not found - falling back to default`);
+    return this.resolveShell('auto');
+  }
+
+  private buildBash(bashPath: string, env: Record<string, string>, cacheKey: ShellChoice): ResolvedShell {
+    const rcPath = this.writeBashRc();
+    const resolved: ResolvedShell = {
+      cmd: bashPath,
+      args: ['--rcfile', rcPath, '-i'],
+      env,
+      label: 'bash',
+    };
+    this.resolvedShells.set(cacheKey, resolved);
+    return resolved;
+  }
+
+  private buildPwsh(pwshPath: string, env: Record<string, string>, cacheKey: ShellChoice): ResolvedShell {
+    const profilePath = this.writePwshProfile();
+    const resolved: ResolvedShell = {
+      cmd: pwshPath,
+      args: ['-NoLogo', '-NoExit', '-File', profilePath],
+      env: { ...env, POWERSHELL_TELEMETRY_OPTOUT: '1' },
+      label: 'pwsh',
+    };
+    this.resolvedShells.set(cacheKey, resolved);
+    return resolved;
+  }
+
+  /**
+   * Write a PowerShell profile with a Trakend-themed prompt and a few
+   * cross-shell aliases for users who explicitly opt into pwsh.
    */
   private writePwshProfile(): string {
     const profilePath = path.join(os.tmpdir(), 'trakend-pwsh-profile.ps1');
@@ -120,9 +197,7 @@ function prompt {
     Write-Host ">" -NoNewline -ForegroundColor Cyan
     return " "
 }
-# Friendlier defaults
 $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
-# Helpful aliases that match common Linux + Windows commands
 Set-Alias -Name ll -Value Get-ChildItem -Force -ErrorAction SilentlyContinue
 Set-Alias -Name la -Value Get-ChildItem -Force -ErrorAction SilentlyContinue
 Set-Alias -Name which -Value Get-Command -Force -ErrorAction SilentlyContinue
@@ -131,7 +206,7 @@ function .. { Set-Location .. }
 function ... { Set-Location ../.. }
 Write-Host "Trakend OS Terminal" -ForegroundColor Cyan
 Write-Host "PowerShell $($PSVersionTable.PSVersion) on $([Environment]::OSVersion.VersionString)" -ForegroundColor DarkGray
-Write-Host "Type 'help <command>' for command help. 'Get-Command' lists everything." -ForegroundColor DarkGray
+Write-Host "Tip: paste bash commands? Open a Bash session instead (use shell picker)." -ForegroundColor DarkGray
 Write-Host ""
 `;
     try {
@@ -143,18 +218,17 @@ Write-Host ""
   }
 
   /**
-   * Write a bashrc that emulates the PowerShell prompt and ports the most
-   * common cmdlets/aliases so muscle memory works across shells.
+   * Write a bashrc that gives a PowerShell-styled prompt and ports the most
+   * common cmdlets/aliases so muscle memory works across shells. Persistent
+   * shared history lives under /var/lib/trakend/terminal-history.
    */
   private writeBashRc(): string {
     const rcPath = path.join(os.tmpdir(), 'trakend-bashrc');
     const historyFile = path.join(this.HISTORY_DIR, 'bash_history');
-    const rc = `# Trakend OS bash rc — PowerShell-styled
-# Source system bashrc if present so users keep their defaults
+    const rc = `# Trakend OS bash rc - PowerShell-styled
 [ -f /etc/bash.bashrc ] && source /etc/bash.bashrc
 [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"
 
-# Colors and shell options
 export CLICOLOR=1
 export LS_COLORS="\${LS_COLORS:-di=1;36:ln=1;35:so=1;32:pi=1;33:ex=1;31}"
 export HISTFILE="${historyFile}"
@@ -163,17 +237,14 @@ export HISTFILESIZE=50000
 export HISTCONTROL=ignoredups:erasedups
 export HISTTIMEFORMAT="%F %T "
 shopt -s histappend checkwinsize cmdhist
-# Append history immediately so concurrent terminals share it
 PROMPT_COMMAND="history -a; history -n; \${PROMPT_COMMAND}"
 
-# Enable bash completion if available
 if [ -f /etc/bash_completion ]; then
     . /etc/bash_completion
 elif [ -f /usr/share/bash-completion/bash_completion ]; then
     . /usr/share/bash-completion/bash_completion
 fi
 
-# PowerShell-styled prompt: PS /path>
 _trakend_prompt() {
     local last=$?
     local cwd="\${PWD/#$HOME/~}"
@@ -183,7 +254,6 @@ _trakend_prompt() {
 }
 PROMPT_COMMAND="_trakend_prompt; \${PROMPT_COMMAND}"
 
-# PowerShell-flavored aliases
 alias cls='clear'
 alias dir='ls -lh --color=auto'
 alias ls='ls --color=auto'
@@ -199,10 +269,9 @@ alias ..='cd ..'
 alias ...='cd ../..'
 alias ....='cd ../../..'
 
-# Welcome banner
 echo -e "\\e[1;36mTrakend OS Terminal\\e[0m"
-echo -e "\\e[2mBash $BASH_VERSION on $(uname -sr) — PowerShell-styled\\e[0m"
-echo -e "\\e[2mAliases: ls dir ll cls type gci .. ... — Try 'alias' to see all.\\e[0m"
+echo -e "\\e[2mBash $BASH_VERSION on $(uname -sr) - PowerShell-styled\\e[0m"
+echo -e "\\e[2mPaste bash commands directly. Aliases: ls dir ll cls type gci .. ...\\e[0m"
 echo ""
 `;
     try {
@@ -213,10 +282,14 @@ echo ""
     return rcPath;
   }
 
-  createSession(name?: string): TerminalSession {
+  /**
+   * Create a terminal session. Optional `shell` selects bash/pwsh/zsh/sh,
+   * defaults to 'auto' (bash if installed).
+   */
+  createSession(name?: string, shellChoice: ShellChoice = 'auto'): TerminalSession {
     const id = uuidv4();
     const sessionName = name || `Terminal ${this.sessions.size + 1}`;
-    const shell = this.resolveShell();
+    const shell = this.resolveShell(shellChoice);
 
     try {
       const pty = spawn(shell.cmd, shell.args, {
@@ -233,7 +306,7 @@ echo ""
         pid: pty.pid,
         created_at: Date.now(),
         last_activity: Date.now(),
-        shell: shell.cmd,
+        shell: shell.label,
         pty,
         dataHandlers: new Set<(data: string) => void>(),
       };
@@ -242,12 +315,11 @@ echo ""
 
       this.logger.info(
         'SYSTEM',
-        `Terminal session created: ${sessionName} (${id}) shell=${path.basename(shell.cmd)} pid=${pty.pid}`
+        `Terminal session created: ${sessionName} (${id}) shell=${shell.label} pid=${pty.pid}`
       );
 
       this.scheduleIdleCheck(id);
 
-      // Hard lifetime cap
       setTimeout(() => {
         if (this.sessions.has(id)) {
           this.logger.info('SYSTEM', `Terminal session lifetime cap reached: ${id}`);
@@ -337,7 +409,6 @@ echo ""
 
     session.dataHandlers.add(handler);
 
-    // Wire pty -> fanout exactly once per session
     if (session.dataHandlers.size === 1) {
       session.pty.on('data', (data: string) => {
         const s = this.sessions.get(sessionId);
@@ -366,7 +437,6 @@ echo ""
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
     try {
-      // Clamp to sane bounds — pty rejects nonsense values.
       const c = Math.max(20, Math.min(500, Math.floor(cols) || 80));
       const r = Math.max(5, Math.min(200, Math.floor(rows) || 24));
       session.pty.resize(c, r);

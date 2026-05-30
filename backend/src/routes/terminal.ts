@@ -1,12 +1,9 @@
 import { Router, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
-import { TerminalService } from '../services/terminalService';
+import { TerminalService, ShellChoice } from '../services/terminalService';
 import { WebSocket } from 'ws';
 
-interface TerminalRequest extends AuthRequest {
-  ws?: WebSocket;
-  sessionId?: string;
-}
+const VALID_SHELLS: ShellChoice[] = ['auto', 'bash', 'pwsh', 'sh', 'zsh'];
 
 export function createTerminalRouter(terminalService: TerminalService): Router {
   const router = Router();
@@ -14,7 +11,11 @@ export function createTerminalRouter(terminalService: TerminalService): Router {
   router.post('/sessions', (req: AuthRequest, res: Response) => {
     try {
       const name = req.body.name || undefined;
-      const session = terminalService.createSession(name);
+      const rawShell = (req.body.shell || 'auto') as string;
+      const shell: ShellChoice = VALID_SHELLS.includes(rawShell as ShellChoice)
+        ? (rawShell as ShellChoice)
+        : 'auto';
+      const session = terminalService.createSession(name, shell);
       res.json(session);
     } catch (error) {
       res.status(500).json({ error: String(error) });
@@ -34,6 +35,15 @@ export function createTerminalRouter(terminalService: TerminalService): Router {
     try {
       terminalService.closeSession(req.params.id);
       res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // List shells installed on this host so the frontend can offer a picker
+  router.get('/shells', (_req: AuthRequest, res: Response) => {
+    try {
+      res.json(terminalService.listAvailableShells());
     } catch (error) {
       res.status(500).json({ error: String(error) });
     }
