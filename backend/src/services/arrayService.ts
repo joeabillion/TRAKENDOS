@@ -213,6 +213,22 @@ export class ArrayService {
   // Stable device identity (UUID) helpers
   // ──────────────────────────────────────────────────────
 
+  /** True if `target` is a mountpoint (any number of stacked mounts). */
+  private isMountpoint(target: string): boolean {
+    try {
+      const out = execSync(`findmnt -n -o TARGET "${target}" 2>/dev/null`, { encoding: 'utf-8' });
+      return out.split('\n').map(s => s.trim()).includes(target);
+    } catch { return false; }
+  }
+
+  /** Every target where a source device is currently mounted. */
+  private mountTargetsOf(source: string): string[] {
+    try {
+      return execSync(`findmnt -n -o TARGET "${source}" 2>/dev/null`, { encoding: 'utf-8' })
+        .split('\n').map(s => s.trim()).filter(Boolean);
+    } catch { return []; }
+  }
+
   /** First partition of a disk (handles sda1, nvme0n1p1, mmcblk0p1), or the disk itself. */
   private getMountablePartition(device: string): string {
     try {
@@ -889,7 +905,7 @@ export class ArrayService {
       const drive = this.drives.get(a.drive_id);
       const devPresent = !!(drive?.device && fs.existsSync(drive.device)) || (!!a.device && fs.existsSync(a.device));
       let mounted = false;
-      try { mounted = execSync(`findmnt -n -o TARGET "${mp}" 2>/dev/null`, { encoding: 'utf-8' }).trim() === mp; } catch { /* no */ }
+      mounted = this.isMountpoint(mp);
       if (!devPresent) problems.push(`slot ${a.slot}: device ${drive?.device || a.device} disappeared`);
       else if (!mounted) problems.push(`slot ${a.slot}: ${mp} is no longer mounted`);
       if (drive) drive.mount_point = mounted ? mp : undefined;
@@ -1023,6 +1039,12 @@ export class ArrayService {
           if (drive) drive.mount_point = mountPoint;
           successfulMounts++;
           this.logger.info('ARRAY', `${partDev} already mounted at ${mountPoint}`);
+          // Same device also mounted at legacy paths (e.g. /mnt/disks/usb1 or a stale slot)?
+          // Clear those if nobody is using them so one disk == one path.
+          for (const extra of currentMounts.filter(m => m !== mountPoint && m.startsWith('/mnt/disks/'))) {
+            try { execSync(`umount "${extra}"`, { timeout: 10000, stdio: 'pipe' }); this.logger.info('ARRAY', `Removed legacy mount of ${partDev} at ${extra}`); }
+            catch { this.logger.warn('ARRAY', `${partDev} also mounted at ${extra} (busy) — will clear when free`); }
+          }
           continue;
         }
 
@@ -1310,13 +1332,16 @@ export class ArrayService {
       if (assignment.role === 'parity' || assignment.role === 'parity2' || assignment.role === 'hot_spare') continue;
       const mountPoint = assignment.role === 'cache' ? '/mnt/disks/cache' : `/mnt/disks/disk${assignment.slot}`;
       let isMounted = false;
-      try { isMounted = execSync(`findmnt -n -o TARGET "${mountPoint}" 2>/dev/null`, { encoding: 'utf-8' }).trim() === mountPoint; } catch { /* not mounted */ }
+      isMounted = this.isMountpoint(mountPoint);
       if (!isMounted) continue;
 
+      // Peel off every stacked layer (legacy mount under the slot mount); retry on busy.
       let done = false;
-      for (let attempt = 0; attempt < 5 && !done; attempt++) {
-        try { execSync(`umount "${mountPoint}"`, { timeout: 30000, stdio: 'pipe' }); done = true; }
-        catch { try { execSync('sleep 2'); } catch { /* ignore */ } }
+      for (let attempt = 0; attempt < 8 && !done; attempt++) {
+        try {
+          execSync(`umount "${mountPoint}"`, { timeout: 30000, stdio: 'pipe' });
+          if (!this.isMountpoint(mountPoint)) done = true; // another layer underneath? loop again
+        } catch { try { execSync('sleep 2'); } catch { /* ignore */ } }
       }
       if (done) {
         this.logger.info('ARRAY', `Unmounted ${mountPoint}`);
