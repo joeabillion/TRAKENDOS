@@ -20,7 +20,16 @@ echo "══ 0. Pre-flight backups → /root/trakend-pre-$STAMP"
 mkdir -p "/root/trakend-pre-$STAMP"
 cp -a /etc/fstab "/root/trakend-pre-$STAMP/fstab"
 [ -f /etc/samba/smb.conf ] && cp -a /etc/samba/smb.conf "/root/trakend-pre-$STAMP/smb.conf"
-[ -f /data/db/trakend.db ] && sqlite3 /data/db/trakend.db ".backup '/root/trakend-pre-$STAMP/trakend.db'" 2>/dev/null || cp -a /data/db/trakend.db "/root/trakend-pre-$STAMP/" 2>/dev/null || true
+# SQLite backup: use the online backup API (consistent even with a -wal in flight).
+# Never plain-copy a .db without its -wal/-shm — a mismatched WAL corrupts the copy.
+if [ -f /data/db/trakend.db ]; then
+  ( cd "$REPO/backend" && node -e "const D=require('better-sqlite3');new D('/data/db/trakend.db',{readonly:true}).backup('/root/trakend-pre-$STAMP/trakend.db').then(()=>console.log('   db backup ok')).catch(e=>{console.log('   db backup failed:',e.message)})" ) || true
+fi
+# Legacy DB location check (pre-fix units had no DB_PATH and wrote here). Warn loudly.
+if [ -f /var/lib/trakend-os/trakend.db ] && [ ! -f /data/db/.migrated-from-var-lib ]; then
+  echo "   NOTE: a database also exists at /var/lib/trakend-os/trakend.db (legacy path)."
+  echo "         If the UI shows no drives after this update, run: scripts/migrate-db.sh"
+fi
 cp -a /etc/systemd/system/trakend-*.service "/root/trakend-pre-$STAMP/" 2>/dev/null || true
 PREV=$(git rev-parse --short HEAD)
 echo "   previous commit: $PREV"
