@@ -30,9 +30,14 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=15
 KillMode=mixed
-EnvironmentFile=-/opt/trakend/os/backend/.env
+# Hard defaults FIRST, then .env may override. Never rely on .env for the data paths:
+# a missing .env must not silently point the backend at an empty database.
 Environment=NODE_ENV=production
 Environment=PORT=80
+Environment=DATA_DIR=/data
+Environment=DB_PATH=/data/db/trakend.db
+Environment=LOG_DIR=/data/logs
+EnvironmentFile=-/opt/trakend/os/backend/.env
 
 [Install]
 WantedBy=multi-user.target

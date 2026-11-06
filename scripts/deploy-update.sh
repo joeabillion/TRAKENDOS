@@ -51,12 +51,18 @@ sleep 6
 systemctl --no-pager status trakend-os.service | head -5
 
 echo "══ 7. verification"
-echo "-- array log (last 25 ARRAY lines):"
-journalctl -u trakend-os --no-pager -n 400 | grep -E '\[ARRAY\]|ARRAY' | tail -25 || true
+set +e   # nothing below should abort the script
+echo "-- waiting for array auto-start to settle..."
+for i in $(seq 1 20); do
+  journalctl -u trakend-os --no-pager --since "2 min ago" 2>/dev/null | grep -qE 'Array started|Array startup aborted|Array auto-start failed' && break
+  sleep 3
+done
+echo "-- array log:"
+journalctl -u trakend-os --no-pager --since "3 min ago" | grep -iE 'array|mount|fstab|parity' | tail -30
 echo "-- fstab diff vs backup (only /mnt lines should change):"
-diff "/root/trakend-pre-$STAMP/fstab" /etc/fstab || true
+diff "/root/trakend-pre-$STAMP/fstab" /etc/fstab
 echo "-- mounts:"
-findmnt -n -o TARGET,SOURCE,FSTYPE,OPTIONS -t ext4,xfs,btrfs | grep -E '^/(data|mnt/disks)' | sort
+findmnt -ln -o TARGET,SOURCE,FSTYPE,OPTIONS -t ext4,xfs,btrfs | grep -E '^/(data|mnt/disks)' | sort
 echo "-- OS lines still present in fstab:"
 grep -E ' / | /boot | /data | swap ' /etc/fstab | grep -v '^#' || echo "!! CHECK FSTAB !!"
 echo "-- samba:"

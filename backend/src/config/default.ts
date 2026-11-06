@@ -5,7 +5,9 @@ export const DEFAULT_CONFIG = {
     FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:3000',
   },
   DATABASE: {
-    PATH: process.env.DB_PATH || '/var/lib/trakend-os/trakend.db',
+    // Trakend OS keeps all state on the /data partition. Fall back to the legacy path only
+    // if /data does not exist (dev machines), never on a real install.
+    PATH: process.env.DB_PATH || (require('fs').existsSync('/data') ? '/data/db/trakend.db' : '/var/lib/trakend-os/trakend.db'),
   },
   JWT: {
     // NOTE: the actual signing secret is resolved at runtime by utils/secret.ts
