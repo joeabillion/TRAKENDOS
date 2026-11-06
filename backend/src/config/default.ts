@@ -8,7 +8,9 @@ export const DEFAULT_CONFIG = {
     PATH: process.env.DB_PATH || '/var/lib/trakend-os/trakend.db',
   },
   JWT: {
-    SECRET: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+    // NOTE: the actual signing secret is resolved at runtime by utils/secret.ts
+    // (env JWT_SECRET if not a placeholder, else /data/db/jwt.secret, else generated).
+    // Do not read a secret from here.
     EXPIRY: '24h',
   },
   DOCKER: {

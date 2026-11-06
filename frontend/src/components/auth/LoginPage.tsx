@@ -1,8 +1,18 @@
 import React, { useState } from 'react'
-import { Eye, EyeOff, Lock, User, AlertCircle } from 'lucide-react'
+import { Eye, EyeOff, Lock, User, AlertCircle, ShieldAlert, ArrowRight } from 'lucide-react'
+
+/**
+ * Result of a successful login. When the backend flags `mustChangePassword`
+ * (default credentials still in use) the page shows a warning and waits for
+ * the user to acknowledge before calling `proceed()`.
+ */
+export interface LoginResult {
+  mustChangePassword?: boolean
+  proceed: () => void
+}
 
 interface LoginPageProps {
-  onLogin: (username: string, password: string) => Promise<void>
+  onLogin: (username: string, password: string) => Promise<LoginResult | void>
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
@@ -11,6 +21,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [pendingProceed, setPendingProceed] = useState<(() => void) | null>(null)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -21,7 +32,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
     setError('')
     setLoading(true)
     try {
-      await onLogin(username, password)
+      const result = await onLogin(username, password)
+      if (result && result.mustChangePassword) {
+        // Hold on the login screen with a warning until acknowledged
+        setPendingProceed(() => result.proceed)
+      } else if (result) {
+        result.proceed()
+      }
     } catch (err: any) {
       setError(err?.message || 'Invalid credentials')
     } finally {
@@ -92,6 +109,33 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
 
           {/* Login Form */}
           <form onSubmit={handleSubmit} className="px-8 pb-8">
+            {pendingProceed && (
+              <div className="mb-4 px-4 py-3 rounded-lg text-sm" role="alert"
+                style={{
+                  background: 'rgba(255, 165, 2, 0.12)',
+                  border: '1px solid rgba(255, 165, 2, 0.4)',
+                  color: '#ffc247'
+                }}>
+                <div className="flex items-start gap-2">
+                  <ShieldAlert size={18} className="flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <div className="font-semibold">Default credentials in use</div>
+                    <p className="mt-0.5 text-xs opacity-90">
+                      This server is still using the factory password. Anyone on your network can sign in.
+                      Change it in <strong>Settings → Security</strong> as soon as you are in.
+                    </p>
+                    <button
+                      type="button"
+                      autoFocus
+                      onClick={() => pendingProceed()}
+                      className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-black focus-ring"
+                      style={{ background: 'var(--color-warning)' }}>
+                      Continue to dashboard <ArrowRight size={14} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             {error && (
               <div className="mb-4 flex items-center gap-2 px-4 py-3 rounded-lg text-sm"
                 style={{
@@ -159,7 +203,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 hover:opacity-80 transition-opacity"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  aria-pressed={showPassword}
+                  tabIndex={0}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 hover:opacity-80 transition-opacity focus-ring rounded"
                   style={{ color: 'var(--color-text-secondary)' }}>
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
@@ -169,7 +216,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
             {/* Login Button */}
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !!pendingProceed}
               className="w-full py-3 rounded-lg text-white font-semibold text-sm transition-all duration-300 relative overflow-hidden group"
               style={{
                 background: loading

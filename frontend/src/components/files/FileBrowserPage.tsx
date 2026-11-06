@@ -1,13 +1,26 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import {
   FolderOpen, File, HardDrive, ChevronRight,
   ArrowUp, RefreshCw, Search, Trash2, Copy, Scissors,
   Edit3, Eye, FolderPlus, FilePlus, MoreVertical,
-  Grid, List, Filter, X, AlertCircle, Check, Lock,
-  Database, Shield, Zap, Server
+  Grid, List, Filter, X, Lock,
+  Database, Shield, Zap, Server, Upload, Download
 } from 'lucide-react'
 import api from '../../utils/api'
 import clsx from 'clsx'
+import { useToast } from '../common/Toast'
+import { useConfirm } from '../common/ConfirmDialog'
+import { Button } from '../common/Button'
+import { EmptyState } from '../common/EmptyState'
+import { Skeleton } from '../common/Skeleton'
+
+interface UploadJob {
+  id: number
+  name: string
+  progress: number // 0..100
+  status: 'uploading' | 'done' | 'error'
+  error?: string
+}
 
 // ── Types ──
 
@@ -96,6 +109,8 @@ function getFileIcon(entry: FileEntry): React.ReactNode {
 // ── Main Component ──
 
 export const FileBrowserPage: React.FC = () => {
+  const toast = useToast()
+  const confirm = useConfirm()
   const [currentPath, setCurrentPath] = useState('/')
   const [listing, setListing] = useState<DirectoryListing | null>(null)
   const [allDrives, setAllDrives] = useState<PhysicalDrive[]>([])
@@ -114,7 +129,16 @@ export const FileBrowserPage: React.FC = () => {
   const [renameValue, setRenameValue] = useState('')
   const [showNewDialog, setShowNewDialog] = useState<'file' | 'folder' | null>(null)
   const [newName, setNewName] = useState('')
-  const [notification, setNotification] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
+  // Keyboard cursor (index into listing.entries) and shift-range anchor
+  const [cursor, setCursor] = useState<number>(-1)
+  const anchorRef = useRef<number>(-1)
+  const [editingPath, setEditingPath] = useState(false)
+  const [pathDraft, setPathDraft] = useState('')
+  const pathInputRef = useRef<HTMLInputElement>(null)
+  const [uploads, setUploads] = useState<UploadJob[]>([])
+  const [uploadHover, setUploadHover] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
 
   // ── Data loading ──
 
@@ -127,6 +151,8 @@ export const FileBrowserPage: React.FC = () => {
       const res = await api.get('/files/list', { params: { path: dirPath, hidden: showHidden } })
       setListing(res.data)
       setCurrentPath(res.data.path)
+      setCursor(-1)
+      anchorRef.current = -1
     } catch (err: any) {
       setError(err?.response?.data?.error || 'Failed to load directory')
     } finally {
@@ -194,8 +220,7 @@ export const FileBrowserPage: React.FC = () => {
   // ── File operations ──
 
   const notify = (msg: string, type: 'success' | 'error' = 'success') => {
-    setNotification({ msg, type })
-    setTimeout(() => setNotification(null), 3000)
+    type === 'success' ? toast.success(msg) : toast.error(msg)
   }
 
   const handleDelete = async (paths: string[]) => {
@@ -205,7 +230,21 @@ export const FileBrowserPage: React.FC = () => {
       notify(`Cannot delete protected system files: ${protectedItems.map(e => e.name).join(', ')}`, 'error')
       return
     }
-    if (!confirm(`Delete ${paths.length} item(s)? This cannot be undone.`)) return
+    const ok = await confirm({
+      title: `Delete ${paths.length} item${paths.length === 1 ? '' : 's'}?`,
+      message: (
+        <>
+          <span>This cannot be undone.</span>
+          <ul className="mt-2 max-h-32 overflow-auto text-xs font-mono space-y-0.5">
+            {paths.slice(0, 8).map(p => <li key={p} className="truncate">{p}</li>)}
+            {paths.length > 8 && <li>…and {paths.length - 8} more</li>}
+          </ul>
+        </>
+      ),
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    })
+    if (!ok) return
     for (const p of paths) {
       try {
         await api.post('/files/delete', { path: p })
@@ -299,12 +338,116 @@ export const FileBrowserPage: React.FC = () => {
     })
   }
 
-  // Close context menu on click
+  /**
+   * Explorer-style selection: plain click selects one, Ctrl/Cmd toggles,
+   * Shift selects the range from the anchor.
+   */
+  const selectWithModifiers = (index: number, e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
+    const entries = listing?.entries || []
+    const entry = entries[index]
+    if (!entry || entry.protected) return
+    setCursor(index)
+    if (e.shiftKey && anchorRef.current >= 0) {
+      const [a, b] = [Math.min(anchorRef.current, index), Math.max(anchorRef.current, index)]
+      const range = entries.slice(a, b + 1).filter(en => !en.protected).map(en => en.path)
+      setSelectedItems(prev => (e.ctrlKey || e.metaKey ? new Set([...prev, ...range]) : new Set(range)))
+      return
+    }
+    anchorRef.current = index
+    if (e.ctrlKey || e.metaKey) {
+      toggleSelect(entry.path)
+    } else {
+      setSelectedItems(new Set([entry.path]))
+    }
+  }
+
+  const openEntry = (entry: FileEntry) => {
+    if (entry.protected) return
+    if (entry.type === 'directory') navigate(entry.path)
+    else handlePreview(entry.path)
+  }
+
+  // Close context menu on outside click / Escape / scroll
   useEffect(() => {
-    const handler = () => setContextMenu(null)
-    document.addEventListener('click', handler)
-    return () => document.removeEventListener('click', handler)
-  }, [])
+    if (!contextMenu) return
+    const close = () => setContextMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('blur', close)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('blur', close)
+    }
+  }, [contextMenu])
+
+  // Scroll the keyboard cursor into view
+  useEffect(() => {
+    if (cursor < 0 || !listRef.current) return
+    const el = listRef.current.querySelector<HTMLElement>(`[data-index="${cursor}"]`)
+    el?.scrollIntoView({ block: 'nearest' })
+  }, [cursor])
+
+  // ── Editable breadcrumb ──
+  const startEditPath = () => {
+    setPathDraft(currentPath)
+    setEditingPath(true)
+    setTimeout(() => { pathInputRef.current?.focus(); pathInputRef.current?.select() }, 0)
+  }
+  const commitPath = () => {
+    const p = pathDraft.trim()
+    setEditingPath(false)
+    if (p && p !== currentPath) navigate(p.startsWith('/') ? p : `/${p}`)
+  }
+
+  // ── Uploads (drag-drop onto the file list or the Upload button) ──
+  const uploadFiles = (files: FileList | File[], targetDir: string = currentPath) => {
+    const list = Array.from(files)
+    if (list.length === 0) return
+    list.forEach(file => {
+      const id = Date.now() + Math.random()
+      setUploads(prev => [...prev, { id, name: file.name, progress: 0, status: 'uploading' }])
+      const form = new FormData()
+      form.append('path', targetDir)
+      form.append('file', file, file.name)
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `/api/files/upload?path=${encodeURIComponent(targetDir)}`)
+      const token = localStorage.getItem('auth-token')
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      xhr.upload.onprogress = (ev) => {
+        if (!ev.lengthComputable) return
+        const pct = Math.round((ev.loaded / ev.total) * 100)
+        setUploads(prev => prev.map(u => u.id === id ? { ...u, progress: pct } : u))
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          setUploads(prev => prev.map(u => u.id === id ? { ...u, progress: 100, status: 'done' } : u))
+          if (targetDir === currentPath) loadDirectory(currentPath)
+          setTimeout(() => setUploads(prev => prev.filter(u => u.id !== id)), 4000)
+        } else {
+          let msg = `Upload failed (${xhr.status})`
+          try { msg = JSON.parse(xhr.responseText)?.error || msg } catch { /* ignore */ }
+          if (xhr.status === 404 || xhr.status === 405) msg = 'This server build has no file upload endpoint (POST /api/files/upload).'
+          setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: msg } : u))
+          toast.error(`${file.name}: ${msg}`)
+        }
+      }
+      xhr.onerror = () => {
+        setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: 'Network error' } : u))
+        toast.error(`${file.name}: network error during upload`)
+      }
+      xhr.send(form)
+    })
+  }
+
+  const downloadEntry = (entry: FileEntry) => {
+    const token = localStorage.getItem('auth-token') || ''
+    // The download route checks the Authorization header; fall back to a tokenised GET
+    window.open(`/api/files/download?path=${encodeURIComponent(entry.path)}&token=${encodeURIComponent(token)}`, '_blank')
+  }
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -335,15 +478,41 @@ export const FileBrowserPage: React.FC = () => {
         setSelectedItems(new Set())
         setContextMenu(null)
         setShowPreview(null)
+        setEditingPath(false)
       }
-      if (e.key === 'Backspace' && listing?.parent) {
+      if (e.key === 'Backspace' && listing?.parent && !showPreview) {
         e.preventDefault()
         goUp()
       }
+      // Arrow / Enter navigation over the visible listing
+      const entries = listing?.entries || []
+      if (entries.length > 0 && !showPreview && !showNewDialog && !renameTarget) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          const cols = viewMode === 'grid' ? Math.max(1, Math.floor((listRef.current?.clientWidth || 800) / 132)) : 1
+          const step = e.key === 'ArrowDown' ? cols : -cols
+          const next = cursor < 0 ? 0 : Math.max(0, Math.min(entries.length - 1, cursor + step))
+          selectWithModifiers(next, { shiftKey: e.shiftKey, ctrlKey: false, metaKey: false })
+        } else if (viewMode === 'grid' && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+          e.preventDefault()
+          const next = cursor < 0 ? 0 : Math.max(0, Math.min(entries.length - 1, cursor + (e.key === 'ArrowRight' ? 1 : -1)))
+          selectWithModifiers(next, { shiftKey: e.shiftKey, ctrlKey: false, metaKey: false })
+        } else if (e.key === 'Home') {
+          e.preventDefault(); selectWithModifiers(0, { shiftKey: e.shiftKey, ctrlKey: false, metaKey: false })
+        } else if (e.key === 'End') {
+          e.preventDefault(); selectWithModifiers(entries.length - 1, { shiftKey: e.shiftKey, ctrlKey: false, metaKey: false })
+        } else if (e.key === 'Enter') {
+          const target = cursor >= 0 ? entries[cursor] : (selectedItems.size === 1 ? entries.find(en => selectedItems.has(en.path)) : undefined)
+          if (target) { e.preventDefault(); openEntry(target) }
+        } else if (e.key === ' ' && cursor >= 0) {
+          e.preventDefault(); toggleSelect(entries[cursor].path)
+        }
+      }
+      if (e.key === 'l' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); startEditPath() }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [selectedItems, clipboard, listing])
+  }, [selectedItems, clipboard, listing, cursor, viewMode, showPreview, showNewDialog, renameTarget])
 
   // Drag & drop state
   const [draggedPaths, setDraggedPaths] = useState<string[]>([])
@@ -356,9 +525,11 @@ export const FileBrowserPage: React.FC = () => {
     e.dataTransfer.setData('text/plain', paths.join('\n'))
   }
 
+  const isFileDrag = (e: React.DragEvent) => Array.from(e.dataTransfer.types || []).includes('Files')
+
   const handleDragOver = (e: React.DragEvent, targetPath: string) => {
     e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
+    e.dataTransfer.dropEffect = isFileDrag(e) ? 'copy' : 'move'
     setDropTarget(targetPath)
   }
 
@@ -368,7 +539,14 @@ export const FileBrowserPage: React.FC = () => {
 
   const handleDrop = async (e: React.DragEvent, targetDir: string) => {
     e.preventDefault()
+    e.stopPropagation()
     setDropTarget(null)
+    setUploadHover(false)
+    // Files dragged in from the OS -> upload
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      uploadFiles(e.dataTransfer.files, targetDir)
+      return
+    }
     if (draggedPaths.length === 0) return
 
     for (const src of draggedPaths) {
@@ -391,46 +569,54 @@ export const FileBrowserPage: React.FC = () => {
 
   return (
     <div className="flex-1 bg-trakend-dark h-full flex flex-col overflow-hidden">
-      {/* Notification */}
-      {notification && (
-        <div className={clsx(
-          'absolute top-4 right-4 z-50 px-4 py-2 rounded-lg shadow-lg text-sm font-medium flex items-center gap-2',
-          notification.type === 'success' ? 'bg-trakend-success text-white' : 'bg-trakend-error text-white'
-        )}>
-          {notification.type === 'success' ? <Check size={16} /> : <AlertCircle size={16} />}
-          {notification.msg}
-        </div>
-      )}
-
       {/* Toolbar */}
       <div className="bg-trakend-surface border-b border-trakend-border px-4 py-3 flex items-center gap-3 flex-shrink-0">
         {/* Navigation */}
-        <button onClick={goUp} disabled={!listing?.parent}
-          className="p-2 rounded hover:bg-trakend-surface-light disabled:opacity-30 text-trakend-text-secondary">
-          <ArrowUp size={18} />
-        </button>
-        <button onClick={() => loadDirectory(currentPath)} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary">
-          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
-        </button>
+        <Button size="sm" variant="ghost" iconOnly aria-label="Up one level (Backspace)" title="Up one level (Backspace)" onClick={goUp} disabled={!listing?.parent} icon={<ArrowUp size={18} />} />
+        <Button size="sm" variant="ghost" iconOnly aria-label="Refresh" title="Refresh" onClick={() => loadDirectory(currentPath)} loading={loading} icon={<RefreshCw size={18} />} />
 
-        {/* Breadcrumb */}
-        <div className="flex items-center gap-1 flex-1 overflow-x-auto text-sm">
-          <span className="text-trakend-text-secondary font-medium">Drives</span>
-          {breadcrumbs.map((seg, i) => {
-            const fullPath = '/' + breadcrumbs.slice(0, i + 1).join('/')
-            return (
-              <React.Fragment key={i}>
-                <ChevronRight size={14} className="text-trakend-text-secondary flex-shrink-0" />
-                <button
-                  onClick={() => navigate(fullPath)}
-                  className={clsx(
-                    'whitespace-nowrap hover:text-trakend-accent',
-                    i === breadcrumbs.length - 1 ? 'text-trakend-text-primary font-medium' : 'text-trakend-text-secondary'
-                  )}
-                >{seg}</button>
-              </React.Fragment>
-            )
-          })}
+        {/* Breadcrumb (click the empty area or Ctrl+L to type a path) */}
+        <div
+          className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto text-sm h-8 px-2 rounded-md border border-transparent hover:border-trakend-border cursor-text"
+          onClick={(e) => { if (e.target === e.currentTarget) startEditPath() }}
+          title="Click to edit path (Ctrl+L)"
+        >
+          {editingPath ? (
+            <input
+              ref={pathInputRef}
+              value={pathDraft}
+              onChange={e => setPathDraft(e.target.value)}
+              onBlur={commitPath}
+              onKeyDown={e => {
+                if (e.key === 'Enter') commitPath()
+                if (e.key === 'Escape') setEditingPath(false)
+                e.stopPropagation()
+              }}
+              className="w-full !py-0.5 !px-2 font-mono text-sm bg-trakend-dark"
+              spellCheck={false}
+              aria-label="Path"
+            />
+          ) : (
+            <>
+              <button onClick={() => navigate('/')} className="text-trakend-text-secondary font-medium hover:text-trakend-accent focus-ring rounded px-0.5">/</button>
+              {breadcrumbs.map((seg, i) => {
+                const fullPath = '/' + breadcrumbs.slice(0, i + 1).join('/')
+                return (
+                  <React.Fragment key={i}>
+                    <ChevronRight size={14} className="text-trakend-text-secondary flex-shrink-0" />
+                    <button
+                      onClick={() => navigate(fullPath)}
+                      className={clsx(
+                        'whitespace-nowrap hover:text-trakend-accent focus-ring rounded px-0.5',
+                        i === breadcrumbs.length - 1 ? 'text-trakend-text-primary font-medium' : 'text-trakend-text-secondary'
+                      )}
+                    >{seg}</button>
+                  </React.Fragment>
+                )
+              })}
+              <span className="flex-1 min-w-[2rem] h-full" onClick={startEditPath} />
+            </>
+          )}
         </div>
 
         {/* Search */}
@@ -455,9 +641,13 @@ export const FileBrowserPage: React.FC = () => {
           <button onClick={() => setShowNewDialog('folder')} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary" title="New Folder">
             <FolderPlus size={18} />
           </button>
-          <button onClick={() => setShowNewDialog('file')} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary" title="New File">
+          <button onClick={() => setShowNewDialog('file')} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary focus-ring" title="New File" aria-label="New file">
             <FilePlus size={18} />
           </button>
+          <button onClick={() => fileInputRef.current?.click()} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary focus-ring" title="Upload files (or drag them into the list)" aria-label="Upload files">
+            <Upload size={18} />
+          </button>
+          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) uploadFiles(e.target.files); e.target.value = '' }} />
           {selectedItems.size > 0 && (
             <>
               <button onClick={handleCopy} className="p-2 rounded hover:bg-trakend-surface-light text-trakend-text-secondary" title="Copy">
@@ -576,7 +766,16 @@ export const FileBrowserPage: React.FC = () => {
                               <div className="text-[10px] text-trakend-text-secondary mt-0.5">{usagePercent}% used</div>
                             </div>
                           )}
-                          {!isMounted && <div className="text-[10px] text-red-400 mt-0.5">{arrayState === 'running' || arrayState === 'degraded' ? 'Not mounted' : 'Array stopped'}</div>}
+                          {!isMounted && (
+                            <div
+                              className="text-[10px] text-red-400 mt-0.5 cursor-help"
+                              title={arrayState === 'running' || arrayState === 'degraded'
+                                ? 'The array is running but this drive has no mount point. Open the Array page and use "Reconcile mounts".'
+                                : 'The array is stopped, so no data drives are mounted. Start the array to browse this drive.'}
+                            >
+                              {arrayState === 'running' || arrayState === 'degraded' ? 'Not mounted' : 'Array stopped'}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </button>
@@ -606,11 +805,55 @@ export const FileBrowserPage: React.FC = () => {
           ))}
         </div>
 
-        {/* File list — right panel */}
-        <div className="flex-1 overflow-auto">
+        {/* File list — right panel (also a drop zone for uploads) */}
+        <div
+          ref={listRef}
+          className={clsx('flex-1 overflow-auto relative outline-none', uploadHover && 'ring-2 ring-inset ring-trakend-accent')}
+          tabIndex={0}
+          onDragOver={(e) => { if (isFileDrag(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setUploadHover(true) } }}
+          onDragLeave={(e) => { if (e.currentTarget === e.target) setUploadHover(false) }}
+          onDrop={(e) => { if (isFileDrag(e)) { e.preventDefault(); setUploadHover(false); uploadFiles(e.dataTransfer.files) } }}
+        >
+          {uploadHover && (
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-trakend-accent/10">
+              <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-trakend-surface border border-trakend-accent text-sm text-trakend-text-primary shadow-xl">
+                <Upload size={16} className="text-trakend-accent" /> Drop to upload into <span className="font-mono">{currentPath}</span>
+              </div>
+            </div>
+          )}
+
+          {uploads.length > 0 && (
+            <div className="sticky top-0 z-10 bg-trakend-surface border-b border-trakend-border px-4 py-2 space-y-1.5">
+              {uploads.map(u => (
+                <div key={u.id} className="flex items-center gap-3 text-xs">
+                  <Upload size={12} className={u.status === 'error' ? 'text-trakend-error' : 'text-trakend-accent'} />
+                  <span className="truncate flex-1 text-trakend-text-primary">{u.name}</span>
+                  {u.status === 'error' ? (
+                    <span className="text-trakend-error truncate max-w-[50%]" title={u.error}>{u.error}</span>
+                  ) : (
+                    <>
+                      <div className="w-40 h-1.5 bg-trakend-dark rounded-full overflow-hidden">
+                        <div className={clsx('h-full rounded-full transition-all', u.status === 'done' ? 'bg-trakend-success' : 'bg-trakend-accent')} style={{ width: `${u.progress}%` }} />
+                      </div>
+                      <span className="w-10 text-right tabular-nums text-trakend-text-secondary">{u.status === 'done' ? 'done' : `${u.progress}%`}</span>
+                    </>
+                  )}
+                  <button onClick={() => setUploads(prev => prev.filter(x => x.id !== u.id))} aria-label="Dismiss" className="text-trakend-text-secondary hover:text-trakend-text-primary focus-ring rounded"><X size={12} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+
           {error && (
-            <div className="m-4 p-3 rounded-lg bg-red-900/20 border border-trakend-error/30 text-trakend-error text-sm flex items-center gap-2">
-              <AlertCircle size={16} /> {error}
+            <div className="m-4">
+              <EmptyState compact error title="Could not open this location" description={error}
+                action={<Button size="sm" variant="secondary" onClick={() => loadDirectory(currentPath)}>Retry</Button>} />
+            </div>
+          )}
+
+          {loading && !listing && (
+            <div className="p-4 space-y-2">
+              {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}
             </div>
           )}
 
@@ -635,10 +878,8 @@ export const FileBrowserPage: React.FC = () => {
               ))}
             </div>
           ) : !listing && !loading ? (
-            <div className="flex flex-col items-center justify-center h-full text-trakend-text-secondary">
-              <HardDrive size={48} className="mb-4 opacity-20" />
-              <span className="text-sm font-medium">Select a drive to browse</span>
-              <span className="text-xs mt-1 opacity-60">Choose a drive from the sidebar or use Quick Access</span>
+            <div className="p-6 h-full flex items-center justify-center">
+              <EmptyState icon={<HardDrive size={40} />} title="Select a drive to browse" description="Choose a drive from the sidebar or use Quick Access." />
             </div>
           ) : listing && (
             <>
@@ -678,9 +919,11 @@ export const FileBrowserPage: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {listing.entries.map(entry => (
+                    {listing.entries.map((entry, index) => (
                       <tr
                         key={entry.path}
+                        data-index={index}
+                        onClick={(e) => { if ((e.target as HTMLElement).tagName !== 'INPUT') selectWithModifiers(index, e) }}
                         draggable={!entry.protected}
                         onDragStart={!entry.protected ? (e => handleDragStart(e, entry)) : undefined}
                         onDragOver={entry.type === 'directory' && !entry.protected ? (e => handleDragOver(e, entry.path)) : undefined}
@@ -691,9 +934,10 @@ export const FileBrowserPage: React.FC = () => {
                           !entry.protected && 'hover:bg-trakend-surface-light/50 cursor-pointer',
                           entry.protected && 'opacity-50 cursor-default',
                           selectedItems.has(entry.path) && !entry.protected && 'bg-trakend-accent/10',
+                          cursor === index && 'outline outline-1 outline-trakend-accent/60 -outline-offset-1',
                           dropTarget === entry.path && !entry.protected && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
                         )}
-                        onDoubleClick={() => !entry.protected && (entry.type === 'directory' ? navigate(entry.path) : handlePreview(entry.path))}
+                        onDoubleClick={() => openEntry(entry)}
                         onContextMenu={e => { e.preventDefault(); if (!entry.protected) setContextMenu({ x: e.clientX, y: e.clientY, entry }) }}
                       >
                         <td className="px-2 py-1.5">
@@ -754,9 +998,10 @@ export const FileBrowserPage: React.FC = () => {
               ) : (
                 /* Grid view */
                 <div className="p-4 grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
-                  {listing.entries.map(entry => (
+                  {listing.entries.map((entry, index) => (
                     <div
                       key={entry.path}
+                      data-index={index}
                       draggable={!entry.protected}
                       onDragStart={!entry.protected ? (e => handleDragStart(e, entry)) : undefined}
                       onDragOver={entry.type === 'directory' && !entry.protected ? (e => handleDragOver(e, entry.path)) : undefined}
@@ -765,10 +1010,11 @@ export const FileBrowserPage: React.FC = () => {
                       className={clsx(
                         'p-3 rounded-lg text-center cursor-pointer hover:bg-trakend-surface-light group border border-transparent',
                         selectedItems.has(entry.path) && 'bg-trakend-accent/10 border-trakend-accent/30',
+                        cursor === index && 'border-trakend-accent/60',
                         dropTarget === entry.path && 'ring-2 ring-trakend-accent bg-trakend-accent/10'
                       )}
-                      onDoubleClick={() => entry.type === 'directory' ? navigate(entry.path) : handlePreview(entry.path)}
-                      onClick={() => toggleSelect(entry.path)}
+                      onDoubleClick={() => openEntry(entry)}
+                      onClick={(e) => selectWithModifiers(index, e)}
                       onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, entry }) }}
                     >
                       <div className="flex justify-center mb-2">
@@ -787,9 +1033,8 @@ export const FileBrowserPage: React.FC = () => {
               )}
 
               {listing.entries.length === 0 && !error && (
-                <div className="flex flex-col items-center justify-center py-20 text-trakend-text-secondary">
-                  <FolderOpen size={48} className="mb-3 opacity-30" />
-                  <span className="text-sm">This folder is empty</span>
+                <div className="p-6">
+                  <EmptyState icon={<FolderOpen size={36} />} title="This folder is empty" description="Drag files here to upload, or create a new file or folder from the toolbar." />
                 </div>
               )}
             </>
@@ -800,8 +1045,10 @@ export const FileBrowserPage: React.FC = () => {
       {/* Context Menu */}
       {contextMenu && (
         <div
+          role="menu"
           className="fixed bg-trakend-surface border border-trakend-border rounded-lg shadow-xl py-1 z-50 min-w-48"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          style={{ left: Math.min(contextMenu.x, window.innerWidth - 200), top: Math.min(contextMenu.y, window.innerHeight - 280) }}
+          onMouseDown={(e) => e.stopPropagation()}
         >
           {contextMenu.entry.type === 'directory' && (
             <button onClick={() => { navigate(contextMenu.entry.path); setContextMenu(null) }}
@@ -810,10 +1057,16 @@ export const FileBrowserPage: React.FC = () => {
             </button>
           )}
           {contextMenu.entry.type === 'file' && (
-            <button onClick={() => { handlePreview(contextMenu.entry.path); setContextMenu(null) }}
-              className="w-full text-left px-4 py-2 text-sm text-trakend-text-primary hover:bg-trakend-surface-light flex items-center gap-2">
-              <Eye size={14} /> Preview
-            </button>
+            <>
+              <button onClick={() => { handlePreview(contextMenu.entry.path); setContextMenu(null) }}
+                className="w-full text-left px-4 py-2 text-sm text-trakend-text-primary hover:bg-trakend-surface-light flex items-center gap-2">
+                <Eye size={14} /> Preview
+              </button>
+              <button onClick={() => { downloadEntry(contextMenu.entry); setContextMenu(null) }}
+                className="w-full text-left px-4 py-2 text-sm text-trakend-text-primary hover:bg-trakend-surface-light flex items-center gap-2">
+                <Download size={14} /> Download
+              </button>
+            </>
           )}
           {!contextMenu.entry.protected && (
             <button onClick={() => {

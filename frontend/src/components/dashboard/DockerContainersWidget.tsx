@@ -1,8 +1,10 @@
 import React from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
+import { SkeletonCard } from '../common/Skeleton'
 
 export const DockerContainersWidget: React.FC = () => {
   const stats = useSystemStats()
+  if (!stats) return <SkeletonCard title="Docker Containers" tiles={0} bodyHeight={120} className="h-full" />
   const containers = stats?.dockerContainers || []
   const running = containers.filter(c => c.state === 'running')
   const stopped = containers.filter(c => c.state !== 'running')

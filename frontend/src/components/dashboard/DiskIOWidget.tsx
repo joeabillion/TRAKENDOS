@@ -1,9 +1,11 @@
 import React from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
+import { SkeletonCard } from '../common/Skeleton'
 import { formatBytes } from '../../utils/formatters'
 
 export const DiskIOWidget: React.FC = () => {
   const stats = useSystemStats()
+  if (!stats) return <SkeletonCard title="Disk I/O" tiles={2} bodyHeight={40} className="h-full" />
   const io = stats?.diskIO
 
   return (

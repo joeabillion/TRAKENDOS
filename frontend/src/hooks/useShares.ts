@@ -20,6 +20,8 @@ export interface SambaShare {
   guestOk: boolean
   validUsers: string[]
   writableUsers: string[]
+  timeMachine?: boolean
+  tmMaxSize?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -210,14 +212,16 @@ export const useShares = () => {
       guestOk?: boolean
       validUsers?: string[]
       writableUsers?: string[]
+      timeMachine?: boolean
+      tmMaxSize?: string | null
     }): Promise<SambaShare | null> => {
       setLoading(true)
       setError(null)
       try {
         const response = await api.post('/shares/create', options)
         return response.data
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to create share'
+      } catch (err: any) {
+        const message = err?.response?.data?.error || (err instanceof Error ? err.message : 'Failed to create share')
         setError(message)
         return null
       } finally {
@@ -238,15 +242,17 @@ export const useShares = () => {
         guestOk: boolean
         validUsers: string[]
         writableUsers: string[]
+        timeMachine: boolean
+        tmMaxSize: string | null
       }>
     ): Promise<SambaShare | null> => {
       setLoading(true)
       setError(null)
       try {
-        const response = await api.put(`/shares/${name}`, updates)
+        const response = await api.put(`/shares/${encodeURIComponent(name)}`, updates)
         return response.data
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to update share'
+      } catch (err: any) {
+        const message = err?.response?.data?.error || (err instanceof Error ? err.message : 'Failed to update share')
         setError(message)
         return null
       } finally {

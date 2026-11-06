@@ -31,6 +31,8 @@ export interface AppTemplate {
     cpuCores?: number
     memoryMb?: number
   }
+  /** Request NVIDIA GPU passthrough by default when deploying this template */
+  gpu?: boolean
 }
 
 // Build categories dynamically from the template library

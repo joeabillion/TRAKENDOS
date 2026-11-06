@@ -23,6 +23,15 @@
 
 set -euo pipefail
 
+echo ""
+echo "  ############################################################################"
+echo "  #  DEPRECATED — use installer/build-iso.sh (offline ISO installer).        #"
+echo "  #  This online USB creator is kept for reference only. Systemd units are   #"
+echo "  #  taken from installer/systemd/ (single source of truth).                 #"
+echo "  ############################################################################"
+echo ""
+sleep 3
+
 # ============================================================
 # Colors and helpers
 # ============================================================
@@ -231,7 +240,8 @@ mount --bind /sys "$MNT_USB/sys"
 
 # Copy Trakend OS project to USB
 mkdir -p "$MNT_USB/opt/trakend"
-rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' \
+# .git is kept so the installed system is a real repo (in-app updates)
+rsync -a --exclude='node_modules' --exclude='data' --exclude='installer/output' \
   "$PROJECT_DIR/" "$MNT_USB/opt/trakend/os/"
 
 ok "Trakend OS files embedded"
@@ -280,6 +290,7 @@ log()     { echo -e "  ${CYAN}▸${NC} $1"; }
 ok()      { echo -e "  ${GREEN}✓${NC} $1"; }
 warn()    { echo -e "  ${ORANGE}⚠${NC} $1"; }
 fail()    { echo -e "  ${RED}✗${NC} $1"; }
+die()     { echo -e "\n  ${RED}FATAL: $1${NC}\n"; echo "  Press Enter to drop to shell..."; read; exec /bin/bash; }
 progress(){ echo -e "  ${CYAN}[$1]${NC} $2"; }
 
 clear
@@ -626,7 +637,8 @@ chroot "$INST" bash -c '
     docker-compose-plugin nodejs > /dev/null 2>&1
 
   usermod -aG docker trakend 2>/dev/null || true
-  systemctl enable docker 2>/dev/null || true
+  # Docker is NOT enabled at boot — the Trakend array starts it
+  systemctl disable docker.service docker.socket 2>/dev/null || true
 ' 2>&1 | while IFS= read -r line; do echo -n "."; done
 echo ""
 
@@ -671,12 +683,15 @@ ln -sf /data/logs "$INST/opt/trakend/os/data/logs"
 # Install npm deps and build
 log "Building Trakend OS (this takes a few minutes)..."
 chroot "$INST" bash -c '
+  set -e
   cd /opt/trakend/os
-  npm install --quiet 2>/dev/null
-  cd backend && npm install --quiet 2>/dev/null && npx tsc 2>/dev/null && cd ..
-  cd frontend && npm install --quiet 2>/dev/null && npx vite build 2>/dev/null && cd ..
+  npm install --quiet --no-audit --no-fund 2>/dev/null || true
+  cd backend && npm install --no-audit --no-fund && npx tsc && cd ..
+  cd frontend && npm install --no-audit --no-fund && npx vite build && cd ..
 ' 2>&1 | while IFS= read -r line; do echo -n "."; done
 echo ""
+[ -f "$INST/opt/trakend/os/backend/dist/index.js" ]   || die "Backend build failed (dist/index.js missing)"
+[ -f "$INST/opt/trakend/os/frontend/dist/index.html" ] || die "Frontend build failed (dist/index.html missing)"
 
 # .env for backend
 cat > "$INST/opt/trakend/os/backend/.env" << 'ENVEOF'
@@ -688,35 +703,27 @@ DB_PATH=/data/db/trakend.db
 LOG_DIR=/data/logs
 ENVEOF
 
-# Trakend OS systemd service
-cat > "$INST/etc/systemd/system/trakend-os.service" << SVCEOF
-[Unit]
-Description=Trakend OS Server Management Platform
-After=network-online.target docker.service
-Requires=docker.service
-Wants=network-online.target
+# Systemd units — SINGLE SOURCE OF TRUTH: installer/systemd/ in the repo
+UNIT_SRC="/opt/trakend/os/installer/systemd"
+HELPER_SRC="/opt/trakend/os/installer/scripts"
+[ -f "$UNIT_SRC/trakend-os.service" ] || die "Missing $UNIT_SRC/trakend-os.service"
+install -m 0644 "$UNIT_SRC/trakend-os.service"        "$INST/etc/systemd/system/trakend-os.service"
+install -m 0644 "$UNIT_SRC/trakend-safemode.service"  "$INST/etc/systemd/system/trakend-safemode.service"
+install -m 0644 "$UNIT_SRC/trakend-drives.service"    "$INST/etc/systemd/system/trakend-drives.service"
+install -m 0644 "$UNIT_SRC/trakend-firstboot.service" "$INST/etc/systemd/system/trakend-firstboot.service"
+install -m 0644 "$UNIT_SRC/trakend-backup.service"    "$INST/etc/systemd/system/trakend-backup.service"
+install -m 0644 "$UNIT_SRC/trakend-backup.timer"      "$INST/etc/systemd/system/trakend-backup.timer"
+install -d -m 0755 "$INST/etc/systemd/system/docker.service.d"
+install -m 0644 "$UNIT_SRC/docker.service.d/trakend.conf" "$INST/etc/systemd/system/docker.service.d/trakend.conf"
+mkdir -p "$INST/opt/trakend/scripts"
+install -m 0755 "$HELPER_SRC/detect-extra-drives.sh" "$INST/opt/trakend/scripts/detect-extra-drives.sh"
+install -m 0755 "$HELPER_SRC/firstboot.sh"           "$INST/opt/trakend/scripts/firstboot.sh"
+install -m 0755 /opt/trakend/os/scripts/safemode/trakend-safemode.sh "$INST/opt/trakend/scripts/safemode.sh"
+echo "TRAKEND_VERSION=$VERSION" >> "$INST/opt/trakend/os/backend/.env"
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/trakend/os
-ExecStartPre=/bin/mkdir -p /data/docker /data/mysql /data/db /data/logs /data/backups
-ExecStart=/usr/bin/node backend/dist/index.js
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-Environment=NODE_ENV=production
-Environment=PORT=80
-Environment=DATA_DIR=/data
-Environment=CONFIG_DIR=/data/config
-Environment=TRAKEND_VERSION=$VERSION
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-
-chroot "$INST" systemctl enable trakend-os 2>/dev/null || true
+chroot "$INST" systemctl enable trakend-os trakend-safemode trakend-firstboot trakend-backup.timer 2>/dev/null || true
+# trakend-drives: installed, NOT enabled (fights the array). docker stays disabled (array starts it).
+chroot "$INST" systemctl disable docker.service docker.socket 2>/dev/null || true
 
 # ────────────────────────────────────────────────────────
 # Config backup service (runs nightly + on shutdown)
@@ -760,90 +767,9 @@ BKEOF
 
 chmod +x "$INST/opt/trakend/config-backup.sh"
 
-# Nightly backup timer
-cat > "$INST/etc/systemd/system/trakend-backup.service" << 'BKSVC'
-[Unit]
-Description=Trakend OS Config Backup
+# (trakend-backup.service/.timer installed above from installer/systemd)
 
-[Service]
-Type=oneshot
-ExecStart=/opt/trakend/config-backup.sh
-BKSVC
-
-cat > "$INST/etc/systemd/system/trakend-backup.timer" << 'BKTMR'
-[Unit]
-Description=Trakend OS Nightly Config Backup
-
-[Timer]
-OnCalendar=*-*-* 02:00:00
-OnBootSec=15min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-BKTMR
-
-chroot "$INST" systemctl enable trakend-backup.timer 2>/dev/null || true
-
-# ────────────────────────────────────────────────────────
-# Drive auto-detect for additional data drives
-# ────────────────────────────────────────────────────────
-mkdir -p "$INST/opt/trakend/scripts"
-cat > "$INST/opt/trakend/scripts/detect-extra-drives.sh" << 'EXTRAEOF'
-#!/bin/bash
-# Trakend OS — Detect and mount additional server drives
-# Mounts any non-OS drives under /mnt/disks/<label> for use as storage pools.
-
-ROOT_DEV=$(findmnt -n -o SOURCE / | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
-
-while IFS= read -r line; do
-  DEV_NAME=$(echo "$line" | awk '{print $1}')
-  DEV_PATH="/dev/$DEV_NAME"
-  DEV_SIZE_B=$(lsblk -b -d -n -o SIZE "$DEV_PATH" 2>/dev/null || echo 0)
-
-  [ "$DEV_PATH" = "$ROOT_DEV" ] && continue
-  [[ "$DEV_NAME" == loop* ]] && continue
-  [ "$DEV_SIZE_B" -lt 1073741824 ] && continue  # Skip < 1GB
-
-  while IFS= read -r pname; do
-    PPATH="/dev/$pname"
-    PFSTYPE=$(blkid -s TYPE -o value "$PPATH" 2>/dev/null || echo "")
-    PLABEL=$(blkid -s LABEL -o value "$PPATH" 2>/dev/null || echo "$pname")
-
-    case "$PFSTYPE" in ext4|ext3|xfs|btrfs|ntfs) ;; *) continue ;; esac
-
-    MNT="/mnt/disks/$PLABEL"
-    mkdir -p "$MNT"
-    mountpoint -q "$MNT" 2>/dev/null && continue
-
-    if [ "$PFSTYPE" = "ntfs" ]; then
-      mount -t ntfs-3g "$PPATH" "$MNT" 2>/dev/null || continue
-    else
-      mount "$PPATH" "$MNT" 2>/dev/null || continue
-    fi
-    logger -t "trakend-drives" "Mounted $PPATH at $MNT"
-  done < <(lsblk -n -o NAME "$DEV_PATH" | tail -n +2)
-done < <(lsblk -d -n -o NAME,TYPE | grep "disk")
-EXTRAEOF
-
-chmod +x "$INST/opt/trakend/scripts/detect-extra-drives.sh"
-
-cat > "$INST/etc/systemd/system/trakend-drives.service" << 'DRVSVC'
-[Unit]
-Description=Trakend OS Extra Drive Detection
-After=local-fs.target
-Before=docker.service trakend-os.service
-
-[Service]
-Type=oneshot
-ExecStart=/opt/trakend/scripts/detect-extra-drives.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-DRVSVC
-
-chroot "$INST" systemctl enable trakend-drives 2>/dev/null || true
+# (detect-extra-drives.sh + trakend-drives.service installed above from installer/; unit is NOT enabled)
 
 ok "Trakend OS installed and configured"
 
@@ -910,51 +836,9 @@ SAFEGRUB
 chmod +x "$INST/etc/grub.d/40_trakend_safemode"
 chroot "$INST" update-grub 2>/dev/null
 
-# Safe mode systemd service
-cp /opt/trakend/os/scripts/safemode/trakend-safemode.sh "$INST/opt/trakend/scripts/safemode.sh" 2>/dev/null || true
-chmod +x "$INST/opt/trakend/scripts/safemode.sh" 2>/dev/null || true
-
-cat > "$INST/etc/systemd/system/trakend-safemode.service" << 'SAFESVC'
-[Unit]
-Description=Trakend OS Safe Mode
-ConditionKernelCommandLine=trakend.safemode=1
-Before=trakend-os.service docker.service trakend-drives.service
-Conflicts=trakend-os.service
-
-[Service]
-Type=simple
-ExecStart=/opt/trakend/scripts/safemode.sh
-StandardInput=tty
-StandardOutput=tty
-StandardError=tty
-TTYPath=/dev/tty1
-
-[Install]
-WantedBy=multi-user.target
-SAFESVC
-
-# Also trigger safe mode if the file exists (manual trigger)
-cat > "$INST/etc/systemd/system/trakend-safemode-file.service" << 'SAFEFILE'
-[Unit]
-Description=Trakend OS Safe Mode (file trigger)
-ConditionPathExists=/etc/trakend-safemode
-Before=trakend-os.service docker.service
-Conflicts=trakend-os.service
-
-[Service]
-Type=simple
-ExecStart=/opt/trakend/scripts/safemode.sh
-StandardInput=tty
-StandardOutput=tty
-StandardError=tty
-TTYPath=/dev/tty1
-
-[Install]
-WantedBy=multi-user.target
-SAFEFILE
-
-chroot "$INST" systemctl enable trakend-safemode 2>/dev/null || true
-chroot "$INST" systemctl enable trakend-safemode-file 2>/dev/null || true
+# Safe mode: unit installed above from installer/systemd/trakend-safemode.service.
+# It carries NO Conflicts= — trakend-os.service has ConditionKernelCommandLine=!trakend.safemode=1
+# so the two can never fight. The old file-trigger unit (/etc/trakend-safemode) is gone.
 
 ok "Bootloader installed with Safe Mode (UEFI + Legacy BIOS)"
 

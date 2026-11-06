@@ -1,6 +1,8 @@
 import React from 'react'
 import { HardDrive, Database, Shield } from 'lucide-react'
 import { useSystemStats } from '../../hooks/useSystemStats'
+import { SkeletonCard } from '../common/Skeleton'
+import { EmptyState } from '../common/EmptyState'
 import { formatBytes, formatTemperature, formatPercentage, formatSpeed } from '../../utils/formatters'
 
 function getDriveRole(drive: any): { label: string; priority: number } {
@@ -35,10 +37,12 @@ function getDriveRole(drive: any): { label: string; priority: number } {
 export const StorageWidget: React.FC = () => {
   const stats = useSystemStats()
 
-  if (!stats || !stats.storage || stats.storage.length === 0) {
+  if (!stats) return <SkeletonCard title="Storage" tiles={0} bodyHeight={160} className="h-full" />
+  if (!stats.storage || stats.storage.length === 0) {
     return (
-      <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
-        <div className="text-sm text-trakend-text-secondary">Loading storage data...</div>
+      <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4 h-full">
+        <h3 className="text-base font-semibold text-trakend-text-primary mb-3">Storage</h3>
+        <EmptyState compact title="No storage devices reported" description="The stats stream has not returned any block devices yet." />
       </div>
     )
   }
@@ -46,8 +50,8 @@ export const StorageWidget: React.FC = () => {
   const sortedDrives = [...stats.storage].sort((a, b) => getDriveRole(a).priority - getDriveRole(b).priority)
 
   return (
-    <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
-      <h3 className="text-lg font-semibold text-trakend-text-primary mb-4">
+    <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4 h-full overflow-auto">
+      <h3 className="text-base font-semibold text-trakend-text-primary mb-4">
         Storage <span className="text-sm font-normal text-trakend-text-secondary">({sortedDrives.length} drives)</span>
       </h3>
 

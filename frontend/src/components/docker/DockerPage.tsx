@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
-import { Plus, RefreshCw, Trash2, HardDrive, Download, UploadCloud } from 'lucide-react'
+import { Plus, RefreshCw, Trash2, HardDrive, Download, UploadCloud, AlertTriangle } from 'lucide-react'
+import api from '../../utils/api'
 import {
   useDocker,
   Container,
@@ -25,6 +26,7 @@ export const DockerPage: React.FC = () => {
     stopContainer,
     restartContainer,
     removeContainer,
+    nukeContainer,
     getLogs,
     getSettings,
     getImages,
@@ -51,6 +53,18 @@ export const DockerPage: React.FC = () => {
   const [newDataRoot, setNewDataRoot] = useState<string>('')
   const [shellModal, setShellModal] = useState<{ id: string; name: string } | null>(null)
   const [settingsModal, setSettingsModal] = useState<{ id: string; name: string } | null>(null)
+  const [arrayState, setArrayState] = useState<string | null>(null)
+  const [nukeMessage, setNukeMessage] = useState<string>('')
+
+  const loadArrayState = async () => {
+    try {
+      const response = await api.get('/array/summary')
+      setArrayState(response.data?.config?.state ?? null)
+    } catch {
+      // Array service unavailable; don't block the page
+      setArrayState(null)
+    }
+  }
 
   const loadContainers = async () => {
     setRefreshing(true)
@@ -61,6 +75,9 @@ export const DockerPage: React.FC = () => {
 
   useEffect(() => {
     loadContainers()
+    loadArrayState()
+    const interval = setInterval(loadArrayState, 15000)
+    return () => clearInterval(interval)
   }, [])
 
   useEffect(() => {
@@ -87,6 +104,18 @@ export const DockerPage: React.FC = () => {
 
   const handleRemove = async (id: string) => {
     await removeContainer(id)
+    await loadContainers()
+  }
+
+  const handleNuke = async (id: string) => {
+    setNukeMessage('Stopping Docker daemon and removing container state...')
+    const result = await nukeContainer(id)
+    if (result) {
+      setNukeMessage(`Container removed. Docker restarted; ${result.containers.length} container(s) remain.`)
+    } else {
+      setNukeMessage('')
+    }
+    setTimeout(() => setNukeMessage(''), 8000)
     await loadContainers()
   }
 
@@ -305,6 +334,23 @@ export const DockerPage: React.FC = () => {
           </button>
         </div>
 
+        {/* Array not running banner */}
+        {arrayState !== null && arrayState !== 'running' && (
+          <div className="mb-6 p-4 bg-trakend-warning/10 border border-trakend-warning rounded-lg text-trakend-warning text-sm flex items-center gap-3">
+            <AlertTriangle size={18} />
+            <div>
+              <span className="font-medium">Array is {arrayState}.</span> Start the array before creating, starting or
+              updating containers — their data lives on array disks. Viewing and stopping containers still works.
+            </div>
+          </div>
+        )}
+
+        {nukeMessage && (
+          <div className="mb-6 p-4 bg-trakend-surface border border-trakend-border rounded-lg text-trakend-text-secondary text-sm">
+            {nukeMessage}
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <div className="mb-6 p-4 bg-trakend-error/10 border border-trakend-error rounded-lg text-trakend-error text-sm">
@@ -336,6 +382,7 @@ export const DockerPage: React.FC = () => {
                     onStop={handleStop}
                     onRestart={handleRestart}
                     onRemove={handleRemove}
+                    onNuke={handleNuke}
                     onLogs={handleLogs}
                     onShell={handleShell}
                     onSettings={handleSettings}

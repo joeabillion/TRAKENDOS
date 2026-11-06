@@ -1,8 +1,10 @@
 import React from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
+import { SkeletonCard } from '../common/Skeleton'
 
 export const TemperaturesWidget: React.FC = () => {
   const stats = useSystemStats()
+  if (!stats) return <SkeletonCard title="Temperatures & Fans" tiles={0} bodyHeight={120} className="h-full" />
   const temps = stats?.temperatures
   const fans = temps?.sensors?.filter(s => s.type === 'fan') || []
   const tempSensors = temps?.sensors?.filter(s => s.type === 'temp') || []

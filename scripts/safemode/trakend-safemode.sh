@@ -52,6 +52,26 @@ systemctl stop docker 2>/dev/null || true
 systemctl stop trakend-os 2>/dev/null || true
 systemctl stop trakend-drives 2>/dev/null || true
 
+# Shared secret for the destructive web actions (reboot / shutdown / start Trakend OS).
+# Generated once, persisted on /data so it survives reboots, printed on the console.
+mkdir -p /data/db 2>/dev/null || true
+TOKEN_FILE=/data/db/safemode.token
+if [ ! -s "$TOKEN_FILE" ]; then
+  umask 077
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 16 > "$TOKEN_FILE" 2>/dev/null
+  else
+    head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TOKEN_FILE"
+  fi
+  umask 022
+fi
+chmod 0600 "$TOKEN_FILE" 2>/dev/null || true
+SAFEMODE_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
+export SAFEMODE_TOKEN
+echo -e "  ${BOLD}Safe mode action token:${NC} ${YELLOW}${SAFEMODE_TOKEN}${NC}"
+echo -e "  ${CYAN}(required by the web UI for Reboot / Shutdown / Start Trakend OS; also in ${TOKEN_FILE})${NC}"
+echo ""
+
 # Start minimal diagnostic web server
 # This is a simple Node.js server that provides basic system info and log access
 mkdir -p /tmp/trakend-safemode
@@ -62,6 +82,12 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 
 const PORT = 80;
+// Shared secret: read from the environment (exported by trakend-safemode.sh) or the token file.
+function getToken() {
+  if (process.env.SAFEMODE_TOKEN) return process.env.SAFEMODE_TOKEN.trim();
+  try { return fs.readFileSync('/data/db/safemode.token', 'utf-8').trim(); } catch { return ''; }
+}
+const PROTECTED_ACTIONS = new Set(['reboot', 'shutdown', 'start-trakend', 'boot-normal']);
 
 function getSystemInfo() {
   const info = {};
@@ -155,12 +181,15 @@ function renderPage(info) {
 
   <div class="card">
     <h2>Actions</h2>
+    <p style="font-size:12px;color:#a0aec0;margin-bottom:8px">Reboot, Shutdown, Boot Normal and Start Trakend OS require the action token printed on the server console (also stored in <code>/data/db/safemode.token</code>).</p>
+    <input id="tok" type="password" placeholder="Action token" autocomplete="off" style="padding:8px;border-radius:6px;border:1px solid #2d3748;background:#0d1117;color:#e1e8ed;width:260px;margin-bottom:8px">
+    ${info.actionError ? '<p style="color:#fc8181;font-size:13px;margin-bottom:8px">' + info.actionError + '</p>' : ''}
     <div class="actions">
-      <form method="POST" action="/action/boot-normal"><button class="btn btn-green" type="submit">Boot Normal Mode</button></form>
+      <form method="POST" action="/action/boot-normal" onsubmit="this.token.value=document.getElementById('tok').value"><input type="hidden" name="token"><button class="btn btn-green" type="submit">Boot Normal Mode</button></form>
       <form method="POST" action="/action/start-docker"><button class="btn btn-blue" type="submit">Start Docker Only</button></form>
-      <form method="POST" action="/action/start-trakend"><button class="btn btn-blue" type="submit">Start Trakend OS</button></form>
-      <form method="POST" action="/action/reboot"><button class="btn btn-red" type="submit">Reboot Server</button></form>
-      <form method="POST" action="/action/shutdown"><button class="btn btn-red" type="submit">Shutdown Server</button></form>
+      <form method="POST" action="/action/start-trakend" onsubmit="this.token.value=document.getElementById('tok').value"><input type="hidden" name="token"><button class="btn btn-blue" type="submit">Start Trakend OS</button></form>
+      <form method="POST" action="/action/reboot" onsubmit="this.token.value=document.getElementById('tok').value"><input type="hidden" name="token"><button class="btn btn-red" type="submit">Reboot Server</button></form>
+      <form method="POST" action="/action/shutdown" onsubmit="this.token.value=document.getElementById('tok').value"><input type="hidden" name="token"><button class="btn btn-red" type="submit">Shutdown Server</button></form>
     </div>
   </div>
 
@@ -169,9 +198,55 @@ function renderPage(info) {
 </html>`;
 }
 
-const server = http.createServer((req, res) => {
+function readBody(req) {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (c) => { data += c; if (data.length > 4096) req.destroy(); });
+    req.on('end', () => resolve(data));
+    req.on('error', () => resolve(''));
+  });
+}
+
+function tokenOk(body, req) {
+  const expected = getToken();
+  if (!expected) return false;
+  const params = new URLSearchParams(body || '');
+  const supplied = (params.get('token') || req.headers['x-safemode-token'] || '').toString().trim();
+  if (!supplied || supplied.length !== expected.length) return false;
+  // constant-time compare
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ supplied.charCodeAt(i);
+  return diff === 0;
+}
+
+let lastActionError = '';
+
+// Starting Trakend OS means handing over port 80: stop THIS server first, then
+// start the real service. The browser will reconnect to the real UI.
+function startTrakendAndExit(res) {
+  res.writeHead(200, { 'Content-Type': 'text/html' });
+  res.end('<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0f1419;color:#e1e8ed;padding:40px">' +
+    '<h2>Starting Trakend OS…</h2><p>The safe-mode web server is shutting down to free port 80. ' +
+    'This page will reload in 20 seconds.</p><script>setTimeout(()=>location.replace("/"),20000)</script></body></html>');
+  server.close(() => {
+    try { execSync('systemctl start docker', { stdio: 'ignore' }); } catch {}
+    try { execSync('systemctl start trakend-os', { stdio: 'ignore' }); } catch (e) { console.error('failed to start trakend-os', e && e.message); }
+    // Our unit is Type=simple; exiting ends safe mode cleanly.
+    setTimeout(() => process.exit(0), 500);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url.startsWith('/action/')) {
-    const action = req.url.replace('/action/', '');
+    const action = req.url.replace('/action/', '').split('?')[0];
+    const body = await readBody(req);
+    if (PROTECTED_ACTIONS.has(action) && !tokenOk(body, req)) {
+      lastActionError = 'Invalid or missing action token for "' + action + '".';
+      res.writeHead(303, { Location: '/' });
+      res.end();
+      return;
+    }
+    lastActionError = '';
     try {
       switch (action) {
         case 'boot-normal':
@@ -182,22 +257,26 @@ const server = http.createServer((req, res) => {
           execSync('systemctl start docker');
           break;
         case 'start-trakend':
-          execSync('systemctl start docker && systemctl start trakend-os');
-          break;
+          startTrakendAndExit(res);
+          return;
         case 'reboot':
           execSync('systemctl reboot');
           break;
         case 'shutdown':
           execSync('systemctl poweroff');
           break;
+        default:
+          lastActionError = 'Unknown action.';
       }
-    } catch (e) { /* ignore */ }
-    res.writeHead(302, { Location: '/' });
+    } catch (e) { lastActionError = 'Action failed: ' + (e && e.message ? e.message : String(e)); }
+    res.writeHead(303, { Location: '/' });
     res.end();
     return;
   }
 
   const info = getSystemInfo();
+  info.actionError = lastActionError;
+  lastActionError = '';
   res.writeHead(200, { 'Content-Type': 'text/html' });
   res.end(renderPage(info));
 });
@@ -207,8 +286,9 @@ server.listen(PORT, () => {
 });
 WEBEOF
 
-# Start the minimal web server
+# Start the minimal web server (port 80 — it exits by itself when "Start Trakend OS" is used)
 node /tmp/trakend-safemode/server.js &
+WEB_PID=$!
 
 echo -e "  ${GREEN}Safe mode web UI started on port 80${NC}"
 echo -e "  ${CYAN}http://${IP}${NC}"
@@ -219,5 +299,6 @@ echo ""
 echo -e "  Or use the web UI to select 'Boot Normal Mode'"
 echo ""
 
-# Keep running
-wait
+# Keep running until the web server exits (either killed, or it handed port 80 to trakend-os)
+wait $WEB_PID
+exit 0

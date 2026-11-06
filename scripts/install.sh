@@ -10,6 +10,16 @@
 #
 
 set -e
+set -o pipefail
+
+echo ""
+echo "  ############################################################################"
+echo "  #  DEPRECATED — use installer/build-iso.sh (offline ISO installer)         #"
+echo "  #  This script is kept for bare-metal dev boxes only. It installs the      #"
+echo "  #  systemd units from installer/systemd/ via scripts/apply-systemd-units.sh #"
+echo "  ############################################################################"
+echo ""
+sleep 2
 
 ORANGE='\033[0;33m'
 GREEN='\033[0;32m'
@@ -98,9 +108,9 @@ if ! command -v docker &> /dev/null; then
   apt-get update -qq
   apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin > /dev/null
 
-  # Start and enable Docker
-  systemctl start docker
-  systemctl enable docker
+  # Docker is NOT enabled at boot — the Trakend array starts it on demand.
+  systemctl disable docker.service docker.socket 2>/dev/null || true
+  systemctl stop docker.service docker.socket 2>/dev/null || true
 
   echo -e "${GREEN}[OK]${NC} Docker $(docker --version | cut -d' ' -f3 | tr -d ',') installed"
 else
@@ -144,7 +154,7 @@ fi
 mkdir -p data/db data/logs
 
 # Build
-npm run build > /dev/null 2>&1
+npm run build 2>&1 | tail -20
 
 echo -e "${GREEN}[OK]${NC} Build complete"
 
@@ -154,30 +164,24 @@ echo -e "${GREEN}[OK]${NC} Build complete"
 echo ""
 echo -e "${CYAN}[STEP 6/6]${NC} Creating systemd service..."
 
-cat > /etc/systemd/system/trakend-os.service << EOF
-[Unit]
-Description=Trakend OS Server Management Platform
-After=network.target docker.service
-Requires=docker.service
+# The units are the single source of truth in installer/systemd/ and hardcode
+# /opt/trakend/os. If this checkout lives elsewhere, link it into place.
+if [ "$PROJECT_DIR" != "/opt/trakend/os" ]; then
+  mkdir -p /opt/trakend
+  if [ -e /opt/trakend/os ] && [ ! -L /opt/trakend/os ]; then
+    echo -e "${RED}[ERROR]${NC} /opt/trakend/os exists and is not a symlink; refusing to overwrite."
+    exit 1
+  fi
+  ln -sfn "$PROJECT_DIR" /opt/trakend/os
+  echo -e "${CYAN}[INFO]${NC} Linked /opt/trakend/os -> $PROJECT_DIR"
+fi
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=$PROJECT_DIR
-ExecStart=/usr/bin/node backend/dist/index.js
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-Environment=NODE_ENV=production
-Environment=PORT=3001
+# Verify the build artifacts the unit's ConditionPathExists= requires
+[ -f "$PROJECT_DIR/backend/dist/index.js" ]   || { echo -e "${RED}[ERROR]${NC} backend/dist/index.js missing — build failed"; exit 1; }
+[ -f "$PROJECT_DIR/frontend/dist/index.html" ] || { echo -e "${RED}[ERROR]${NC} frontend/dist/index.html missing — build failed"; exit 1; }
 
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable trakend-os
+mkdir -p /data/db /data/logs /data/docker /data/backups /data/shares /data/appdata /data/mysql
+bash "$PROJECT_DIR/scripts/apply-systemd-units.sh"
 
 echo -e "${GREEN}[OK]${NC} Systemd service created"
 
@@ -198,7 +202,7 @@ echo -e "${CYAN}[INFO]${NC} Start Trakend OS:"
 echo -e "         sudo systemctl start trakend-os"
 echo ""
 echo -e "${CYAN}[INFO]${NC} Access the web interface:"
-echo -e "         http://$(hostname -I | awk '{print $1}'):3001"
+echo -e "         http://$(hostname -I | awk '{print $1}')/   (port 80, from installer/systemd/trakend-os.service)"
 echo ""
 echo -e "${CYAN}[INFO]${NC} Check status:"
 echo -e "         sudo systemctl status trakend-os"

@@ -1,309 +1,633 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
-import { Plus, X } from 'lucide-react'
-import { Terminal as XTerminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import { WebLinksAddon } from '@xterm/addon-web-links'
-import '@xterm/xterm/css/xterm.css'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import clsx from 'clsx'
+import {
+  ChevronDown, ClipboardPaste, Copy, Download, Eraser, Maximize2, Minimize2, Plus, Search, TerminalSquare, X,
+  Minus, RotateCcw, MousePointerSquareDashed, Keyboard,
+} from 'lucide-react'
 import api from '../../utils/api'
+import { Button } from '../common/Button'
+import { Badge } from '../common/Badge'
+import { useToast } from '../common/Toast'
+import { useConfirm } from '../common/ConfirmDialog'
+import { TerminalPane, TerminalPaneHandle, PaneInfo } from './TerminalPane'
+import {
+  PersistedTab, loadTabs, saveTabs, newTabId, loadFontSize, saveFontSize, clampFontSize, FONT_SIZE_DEFAULT,
+  loadCopyOnSelect, saveCopyOnSelect, loadDefaultShell, saveDefaultShell, IDLE_SHELL_PROCESSES,
+} from './terminalSettings'
 
-interface TerminalTab {
-  id: string
-  sessionId: string | null
-  title: string
+interface ShellOption {
+  value: string
+  label: string
+  cmd: string
+}
+
+function formatAge(createdAt: number | null, now: number): string {
+  if (!createdAt) return '—'
+  const s = Math.max(0, Math.floor((now - createdAt) / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
 }
 
 export const TerminalPage: React.FC = () => {
-  const [tabs, setTabs] = useState<TerminalTab[]>([])
-  const [activeTabId, setActiveTabId] = useState<string | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const terminalsRef = useRef<Map<string, XTerminal>>(new Map())
-  const fitsRef = useRef<Map<string, FitAddon>>(new Map())
-  const wsRef = useRef<Map<string, WebSocket>>(new Map())
+  const toast = useToast()
+  const confirm = useConfirm()
 
-  const getWsUrl = (sessionId: string) => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${window.location.host}/ws/terminal/${sessionId}`
-  }
+  const initial = useMemo(() => loadTabs(), [])
+  const [tabs, setTabs] = useState<PersistedTab[]>(initial.tabs)
+  const [activeTabId, setActiveTabId] = useState<string | null>(initial.activeId)
+  const [fontSize, setFontSize] = useState<number>(loadFontSize)
+  const [copyOnSelect, setCopyOnSelect] = useState<boolean>(loadCopyOnSelect)
+  const [shells, setShells] = useState<ShellOption[]>([{ value: 'auto', label: 'Default (Bash)', cmd: 'auto' }])
+  const [defaultShell, setDefaultShell] = useState<string>(loadDefaultShell)
+  const [shellMenuOpen, setShellMenuOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [infos, setInfos] = useState<Record<string, PaneInfo>>({})
+  const [bells, setBells] = useState<Record<string, boolean>>({})
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [now, setNow] = useState(Date.now())
+  const [closing, setClosing] = useState<string | null>(null)
 
-  // Create a backend PTY session and connect via WebSocket
-  const createSession = useCallback(async (tabId: string, container: HTMLElement) => {
-    const term = new XTerminal({
-      cols: 120,
-      rows: 30,
-      theme: {
-        background: getComputedStyle(document.documentElement).getPropertyValue('--color-dark').trim() || '#1a1d2e',
-        foreground: '#e5e5e5',
-        cursor: getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim() || '#2dd4bf',
-      },
-      fontFamily: '"JetBrains Mono", "Monaco", "Courier New", monospace',
-      fontSize: 13,
-      lineHeight: 1.4,
-      cursorBlink: true,
-      rightClickSelectsWord: true,
-      allowProposedApi: true,
-    })
+  const paneRefs = useRef<Map<string, TerminalPaneHandle | null>>(new Map())
+  const rootRef = useRef<HTMLDivElement>(null)
+  const shellMenuRef = useRef<HTMLDivElement>(null)
+  const settingsRef = useRef<HTMLDivElement>(null)
+  const tabsRef = useRef(tabs)
+  const activeRef = useRef(activeTabId)
+  tabsRef.current = tabs
+  activeRef.current = activeTabId
 
-    // Helper: paste text into terminal via WebSocket (Safari-safe)
-    const pasteToTerminal = (text: string) => {
-      const ws = wsRef.current.get(tabId)
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'terminal:input', data: text }))
-      }
-    }
+  const activePane = () => (activeTabId ? paneRefs.current.get(activeTabId) ?? null : null)
 
-    // Helper: read clipboard with fallback for Safari/HTTP (no clipboard API)
-    const readClipboard = (callback: (text: string) => void) => {
-      if (navigator.clipboard && navigator.clipboard.readText) {
-        navigator.clipboard.readText().then(callback).catch(() => {
-          // Fallback: use hidden textarea for paste (works on Safari over HTTP)
-          const textarea = document.createElement('textarea')
-          textarea.style.position = 'fixed'
-          textarea.style.opacity = '0'
-          document.body.appendChild(textarea)
-          textarea.focus()
-          document.execCommand('paste')
-          const text = textarea.value
-          document.body.removeChild(textarea)
-          if (text) callback(text)
-          container.focus()
-        })
-      }
-    }
+  // ── Persistence ──────────────────────────────────────────────────────
+  useEffect(() => {
+    saveTabs(tabs, activeTabId)
+  }, [tabs, activeTabId])
 
-    // Helper: write to clipboard with fallback for Safari/HTTP
-    const writeClipboard = (text: string) => {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {
-          // Fallback: execCommand
-          const textarea = document.createElement('textarea')
-          textarea.value = text
-          textarea.style.position = 'fixed'
-          textarea.style.opacity = '0'
-          document.body.appendChild(textarea)
-          textarea.select()
-          document.execCommand('copy')
-          document.body.removeChild(textarea)
-        })
-      }
-    }
+  useEffect(() => {
+    saveFontSize(fontSize)
+  }, [fontSize])
 
-    // Handle Ctrl+V / Cmd+V paste and Ctrl+C copy
-    // Block both keydown AND keyup for paste to prevent double-paste
-    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
-        if (e.type === 'keydown') {
-          readClipboard(pasteToTerminal)
-        }
-        return false
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        if (e.type === 'keydown') {
-          const sel = term.getSelection()
-          if (sel) {
-            writeClipboard(sel)
-            return false
-          }
-        }
-      }
-      return true
-    })
+  useEffect(() => {
+    saveCopyOnSelect(copyOnSelect)
+  }, [copyOnSelect])
 
-    // Listen for browser paste events (catches Cmd+V on Safari even without clipboard API)
-    container.addEventListener('paste', (e: Event) => {
-      const clipboardEvent = e as ClipboardEvent
-      const text = clipboardEvent.clipboardData?.getData('text')
-      if (text) {
-        e.preventDefault()
-        pasteToTerminal(text)
-      }
-    })
+  useEffect(() => {
+    saveDefaultShell(defaultShell)
+  }, [defaultShell])
 
-    // Right-click context menu for copy/paste
-    container.addEventListener('contextmenu', (e) => {
-      e.preventDefault()
-      const sel = term.getSelection()
-      if (sel) {
-        writeClipboard(sel)
-        term.clearSelection()
-      } else {
-        readClipboard(pasteToTerminal)
-      }
-    })
-
-    const fitAddon = new FitAddon()
-    const webLinksAddon = new WebLinksAddon()
-    term.loadAddon(fitAddon)
-    term.loadAddon(webLinksAddon)
-    term.open(container)
-
-    try { fitAddon.fit() } catch {}
-
-    terminalsRef.current.set(tabId, term)
-    fitsRef.current.set(tabId, fitAddon)
-
-    term.writeln('\x1b[36mConnecting to Trakend OS...\x1b[0m')
-
-    try {
-      // Create a backend PTY session
-      const { data } = await api.post('/terminal/sessions', { name: `Terminal` })
-      const sessionId = data.id
-
-      // Update tab with session ID
-      setTabs(prev => prev.map(t => t.id === tabId ? { ...t, sessionId } : t))
-
-      // Connect WebSocket to the PTY session
-      const ws = new WebSocket(getWsUrl(sessionId))
-      wsRef.current.set(tabId, ws)
-
-      ws.onopen = () => {
-        // Send initial resize
-        ws.send(JSON.stringify({ type: 'terminal:resize', cols: term.cols, rows: term.rows }))
-      }
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'terminal:data') {
-            term.write(msg.data)
-          }
-        } catch {}
-      }
-
-      ws.onerror = () => {
-        term.writeln('\r\n\x1b[31mConnection error\x1b[0m')
-      }
-
-      ws.onclose = () => {
-        term.writeln('\r\n\x1b[33mSession ended\x1b[0m')
-      }
-
-      // Forward terminal input to backend PTY
-      term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'terminal:input', data }))
-        }
-      })
-
-      // Forward resize events
-      term.onResize(({ cols, rows }) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'terminal:resize', cols, rows }))
-        }
-      })
-
-    } catch (err: any) {
-      term.writeln(`\r\n\x1b[31mFailed to create session: ${err?.response?.data?.error || err?.message || 'Unknown error'}\x1b[0m`)
-      term.writeln('\x1b[33mNote: Terminal requires node-pty on the server.\x1b[0m')
-    }
-
-    return () => {
-      const ws = wsRef.current.get(tabId)
-      if (ws) { ws.close(); wsRef.current.delete(tabId) }
-      term.dispose()
-      terminalsRef.current.delete(tabId)
-      fitsRef.current.delete(tabId)
-    }
+  // Session-age ticker
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15000)
+    return () => clearInterval(t)
   }, [])
 
-  // Add new tab
-  const addTab = useCallback(() => {
-    const newId = Date.now().toString()
-    const tabNum = tabs.length + 1
-    const newTab: TerminalTab = { id: newId, sessionId: null, title: `Terminal ${tabNum}` }
-    setTabs(prev => [...prev, newTab])
-    setActiveTabId(newId)
-  }, [tabs.length])
+  // Available shells
+  useEffect(() => {
+    api
+      .get('/terminal/shells')
+      .then(({ data }) => {
+        if (Array.isArray(data) && data.length) setShells(data)
+      })
+      .catch(() => {})
+  }, [])
 
-  // Close tab
-  const closeTab = useCallback((id: string) => {
-    // Close WebSocket and destroy backend session
-    const ws = wsRef.current.get(id)
-    if (ws) { ws.close(); wsRef.current.delete(id) }
-    const tab = tabs.find(t => t.id === id)
+  // ── Tab operations ────────────────────────────────────────────────────
+
+  const addTab = useCallback(
+    (shell?: string) => {
+      const id = newTabId()
+      const current = tabsRef.current
+      const n = current.length + 1
+      const sh = shell || defaultShell
+      const label = shells.find((s) => s.value === sh)?.label
+      const title = sh === 'auto' || !label ? `Terminal ${n}` : `${label} ${n}`
+      setTabs((prev) => [...prev, { id, sessionId: null, title, shell: sh }])
+      setActiveTabId(id)
+      setShellMenuOpen(false)
+    },
+    [defaultShell, shells]
+  )
+
+  // First visit: open one tab
+  useEffect(() => {
+    if (tabsRef.current.length === 0) addTab()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const reallyCloseTab = useCallback((id: string) => {
+    const tab = tabsRef.current.find((t) => t.id === id)
     if (tab?.sessionId) {
       api.delete(`/terminal/sessions/${tab.sessionId}`).catch(() => {})
     }
-
-    const newTabs = tabs.filter(t => t.id !== id)
-    setTabs(newTabs)
-    if (activeTabId === id) {
-      setActiveTabId(newTabs.length > 0 ? newTabs[0].id : null)
-    }
-  }, [tabs, activeTabId])
-
-  // Auto-create first tab
-  useEffect(() => {
-    if (tabs.length === 0) addTab()
+    paneRefs.current.delete(id)
+    setInfos((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    setTabs((prev) => {
+      const idx = prev.findIndex((t) => t.id === id)
+      const next = prev.filter((t) => t.id !== id)
+      if (activeRef.current === id) {
+        const neighbour = next[Math.min(idx, next.length - 1)] || null
+        setActiveTabId(neighbour ? neighbour.id : null)
+      }
+      return next
+    })
   }, [])
 
-  // Initialize terminal when active tab changes
-  useEffect(() => {
-    if (!activeTabId || !containerRef.current) return
-    // Don't reinitialize if terminal already exists
-    if (terminalsRef.current.has(activeTabId)) {
-      // Re-attach existing terminal
-      containerRef.current.innerHTML = ''
-      const term = terminalsRef.current.get(activeTabId)!
-      term.open(containerRef.current)
-      const fit = fitsRef.current.get(activeTabId)
-      if (fit) try { fit.fit() } catch {}
-      return
-    }
-    containerRef.current.innerHTML = ''
-    const cleanup = createSession(activeTabId, containerRef.current)
-    return () => { cleanup.then(fn => fn?.()) }
-  }, [activeTabId, createSession])
+  const closeTab = useCallback(
+    async (id: string) => {
+      const tab = tabsRef.current.find((t) => t.id === id)
+      if (!tab) return
+      setClosing(id)
+      try {
+        let running: string | null = null
+        if (tab.sessionId && infos[id]?.status === 'connected') {
+          try {
+            const { data } = await api.get(`/terminal/sessions/${tab.sessionId}`)
+            const proc = String(data?.process || '').toLowerCase()
+            if (proc && !IDLE_SHELL_PROCESSES.has(proc)) running = proc
+          } catch {
+            /* session gone or backend down — nothing to protect */
+          }
+        }
+        if (running) {
+          const ok = await confirm({
+            title: `Close "${tab.title}"?`,
+            message: (
+              <>
+                <code className="px-1 rounded bg-trakend-dark text-trakend-text-primary">{running}</code> is still running in this
+                terminal. Closing the tab will terminate it.
+              </>
+            ),
+            confirmLabel: 'Close tab',
+            variant: 'danger',
+          })
+          if (!ok) return
+        }
+        reallyCloseTab(id)
+      } finally {
+        setClosing(null)
+      }
+    },
+    [confirm, infos, reallyCloseTab]
+  )
 
-  // Handle window resize
+  const switchTab = useCallback((dir: 1 | -1) => {
+    const list = tabsRef.current
+    if (list.length < 2) return
+    const idx = list.findIndex((t) => t.id === activeRef.current)
+    const next = list[(idx + dir + list.length) % list.length]
+    setActiveTabId(next.id)
+  }, [])
+
+  const startRename = (tab: PersistedTab) => {
+    setRenamingId(tab.id)
+    setRenameValue(tab.title)
+  }
+
+  const commitRename = () => {
+    if (!renamingId) return
+    const title = renameValue.trim()
+    if (title) {
+      setTabs((prev) => prev.map((t) => (t.id === renamingId ? { ...t, title, customTitle: true } : t)))
+      const tab = tabsRef.current.find((t) => t.id === renamingId)
+      if (tab?.sessionId) api.patch(`/terminal/sessions/${tab.sessionId}`, { name: title }).catch(() => {})
+    }
+    setRenamingId(null)
+    setTimeout(() => activePane()?.focus(), 0)
+  }
+
+  // ── Pane callbacks (stable) ───────────────────────────────────────────
+
+  const handleInfo = useCallback((tabId: string, info: PaneInfo) => {
+    setInfos((prev) => {
+      const old = prev[tabId]
+      if (
+        old &&
+        old.status === info.status &&
+        old.cols === info.cols &&
+        old.rows === info.rows &&
+        old.sessionId === info.sessionId &&
+        old.shell === info.shell &&
+        old.createdAt === info.createdAt &&
+        old.exitCode === info.exitCode &&
+        old.attempt === info.attempt &&
+        old.error === info.error
+      )
+        return prev
+      return { ...prev, [tabId]: info }
+    })
+  }, [])
+
+  const handleSessionId = useCallback((tabId: string, sessionId: string | null) => {
+    setTabs((prev) => prev.map((t) => (t.id === tabId && t.sessionId !== sessionId ? { ...t, sessionId } : t)))
+  }, [])
+
+  const handleTitle = useCallback((tabId: string, title: string) => {
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId || t.customTitle) return t
+        // Shell sends "Trakend: ~/path" via OSC 0 — keep it short
+        const clean = title.replace(/^Trakend:\s*/, '').slice(0, 40)
+        return clean && clean !== t.title ? { ...t, title: clean } : t
+      })
+    )
+  }, [])
+
+  const handleBell = useCallback((tabId: string) => {
+    if (activeRef.current !== tabId) setBells((prev) => ({ ...prev, [tabId]: true }))
+  }, [])
+
   useEffect(() => {
-    const handleResize = () => {
-      if (activeTabId) {
-        const fit = fitsRef.current.get(activeTabId)
-        if (fit) try { fit.fit() } catch {}
+    if (activeTabId && bells[activeTabId]) setBells((prev) => ({ ...prev, [activeTabId]: false }))
+  }, [activeTabId, bells])
+
+  // ── Font size ─────────────────────────────────────────────────────────
+
+  const zoom = useCallback((dir: number) => {
+    setFontSize((prev) => (dir === 0 ? FONT_SIZE_DEFAULT : clampFontSize(prev + dir)))
+  }, [])
+
+  useEffect(() => {
+    const onZoom = (e: Event) => zoom((e as CustomEvent<number>).detail)
+    window.addEventListener('trakend:terminal-zoom', onZoom)
+    return () => window.removeEventListener('trakend:terminal-zoom', onZoom)
+  }, [zoom])
+
+  // ── Global keyboard shortcuts (capture phase so xterm never sees them) ──
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!rootRef.current) return
+      const inPage = rootRef.current.contains(document.activeElement) || document.activeElement === document.body
+      if (!inPage) return
+      const k = e.key
+      if (e.ctrlKey && e.shiftKey && (k === 'T' || k === 't')) {
+        e.preventDefault()
+        e.stopPropagation()
+        addTab()
+      } else if (e.ctrlKey && e.shiftKey && (k === 'W' || k === 'w')) {
+        e.preventDefault()
+        e.stopPropagation()
+        if (activeRef.current) void closeTab(activeRef.current)
+      } else if (e.ctrlKey && !e.shiftKey && k === 'PageUp') {
+        e.preventDefault()
+        e.stopPropagation()
+        switchTab(-1)
+      } else if (e.ctrlKey && !e.shiftKey && k === 'PageDown') {
+        e.preventDefault()
+        e.stopPropagation()
+        switchTab(1)
+      } else if (e.ctrlKey && e.shiftKey && (k === 'F' || k === 'f')) {
+        e.preventDefault()
+        e.stopPropagation()
+        activePane()?.toggleSearch()
+      } else if (e.ctrlKey && !e.altKey && !e.shiftKey && (k === '=' || k === '+' || k === '-' || k === '0') && !(document.activeElement instanceof HTMLInputElement)) {
+        e.preventDefault()
+        e.stopPropagation()
+        zoom(k === '0' ? 0 : k === '-' ? -1 : 1)
       }
     }
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
-  }, [activeTabId])
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTab, closeTab, switchTab, zoom])
+
+  // ── Fullscreen ────────────────────────────────────────────────────────
+
+  const toggleFullscreen = useCallback(async () => {
+    const el = rootRef.current
+    if (!el) return
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen()
+      else await el.requestFullscreen()
+    } catch {
+      toast.warning('Fullscreen is not available in this browser')
+    }
+  }, [toast])
+
+  useEffect(() => {
+    const onFs = () => {
+      setIsFullscreen(!!document.fullscreenElement)
+      setTimeout(() => activePane()?.fit(), 50)
+    }
+    document.addEventListener('fullscreenchange', onFs)
+    return () => document.removeEventListener('fullscreenchange', onFs)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Close popovers on outside click
+  useEffect(() => {
+    if (!shellMenuOpen && !settingsOpen) return
+    const h = (e: MouseEvent) => {
+      if (shellMenuRef.current && !shellMenuRef.current.contains(e.target as Node)) setShellMenuOpen(false)
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) setSettingsOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [shellMenuOpen, settingsOpen])
+
+  // ── Toolbar actions ───────────────────────────────────────────────────
+
+  const doPaste = async () => {
+    const pane = activePane()
+    if (!pane) return
+    await pane.pasteFromClipboard()
+  }
+
+  const doCopyAll = async () => {
+    const ok = await activePane()?.copyAll()
+    ok ? toast.success('Scrollback copied to clipboard') : toast.error('Clipboard unavailable — use Download log instead')
+  }
+
+  const activeInfo = activeTabId ? infos[activeTabId] : undefined
+  const statusTone =
+    activeInfo?.status === 'connected' ? 'success' : activeInfo?.status === 'reconnecting' || activeInfo?.status === 'starting' ? 'warning' : 'error'
+  const statusLabel =
+    activeInfo?.status === 'connected'
+      ? 'Connected'
+      : activeInfo?.status === 'reconnecting'
+      ? 'Reconnecting…'
+      : activeInfo?.status === 'starting'
+      ? 'Starting…'
+      : activeInfo?.status === 'gone'
+      ? 'Session lost'
+      : activeInfo?.status === 'exited'
+      ? 'Exited'
+      : activeInfo?.status === 'error'
+      ? 'Error'
+      : '—'
+
+  const currentShellLabel = shells.find((s) => s.value === defaultShell)?.label || 'Default'
 
   return (
-    <div className="flex-1 bg-trakend-surface flex flex-col overflow-hidden h-full">
-      {/* Tab Bar */}
-      <div className="bg-trakend-dark border-b border-trakend-border flex items-center overflow-x-auto flex-shrink-0">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            onClick={() => setActiveTabId(tab.id)}
-            className={`flex items-center gap-2 px-4 py-3 border-r border-trakend-border cursor-pointer transition-colors ${
-              activeTabId === tab.id
-                ? 'bg-trakend-accent text-white'
-                : 'bg-trakend-dark text-trakend-text-secondary hover:text-trakend-text-primary'
-            }`}
-          >
-            <span className="text-sm font-medium">{tab.title}</span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                closeTab(tab.id)
-              }}
-              className="p-1 rounded hover:bg-black/20 transition-colors"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        ))}
+    <div ref={rootRef} className="flex-1 h-full flex flex-col overflow-hidden bg-trakend-darker">
+      {/* Tab bar */}
+      <div className="flex items-stretch bg-trakend-dark border-b border-trakend-border flex-shrink-0 h-10" role="tablist" aria-label="Terminal tabs">
+        <div className="flex items-stretch overflow-x-auto min-w-0 flex-1">
+          {tabs.map((tab) => {
+            const info = infos[tab.id]
+            const isActive = tab.id === activeTabId
+            const dot =
+              info?.status === 'connected' ? 'bg-trakend-success' : info?.status === 'reconnecting' || info?.status === 'starting' ? 'bg-trakend-warning animate-pulse' : 'bg-trakend-error'
+            return (
+              <div
+                key={tab.id}
+                role="tab"
+                aria-selected={isActive}
+                tabIndex={isActive ? 0 : -1}
+                onClick={() => setActiveTabId(tab.id)}
+                onDoubleClick={() => startRename(tab)}
+                onAuxClick={(e) => {
+                  if (e.button === 1) {
+                    e.preventDefault()
+                    void closeTab(tab.id)
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') setActiveTabId(tab.id)
+                  if (e.key === 'F2') startRename(tab)
+                }}
+                title={`${tab.title}${info?.shell ? ` · ${info.shell}` : ''} — double-click to rename, middle-click to close`}
+                className={clsx(
+                  'group relative flex items-center gap-2 pl-3 pr-1.5 min-w-[140px] max-w-[240px] border-r border-trakend-border cursor-pointer select-none focus-ring',
+                  isActive ? 'bg-trakend-darker text-trakend-text-primary' : 'text-trakend-text-secondary hover:text-trakend-text-primary hover:bg-trakend-surface'
+                )}
+              >
+                {isActive && <span className="absolute inset-x-0 top-0 h-0.5 bg-trakend-accent" />}
+                <span className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', dot)} aria-hidden />
+                {renamingId === tab.id ? (
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRename()
+                      if (e.key === 'Escape') setRenamingId(null)
+                      e.stopPropagation()
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex-1 min-w-0 !px-1.5 !py-0 h-6 text-xs bg-trakend-surface"
+                    aria-label="Tab name"
+                  />
+                ) : (
+                  <span className={clsx('flex-1 min-w-0 truncate text-xs font-medium', bells[tab.id] && 'text-trakend-warning')}>{tab.title}</span>
+                )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void closeTab(tab.id)
+                  }}
+                  disabled={closing === tab.id}
+                  aria-label={`Close ${tab.title}`}
+                  className={clsx(
+                    'p-1 rounded text-trakend-text-secondary hover:text-trakend-text-primary hover:bg-trakend-surface-light focus-ring',
+                    !isActive && 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+                  )}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            )
+          })}
 
-        {/* Add Tab Button */}
-        <button
-          onClick={addTab}
-          className="flex items-center gap-2 px-4 py-3 text-trakend-text-secondary hover:text-trakend-text-primary hover:bg-trakend-surface transition-colors ml-auto flex-shrink-0"
-        >
-          <Plus size={16} />
-        </button>
+          {/* New tab (default shell) + shell picker */}
+          <div className="flex items-stretch" ref={shellMenuRef}>
+            <button
+              onClick={() => addTab()}
+              title={`New terminal (${currentShellLabel}) — Ctrl+Shift+T`}
+              aria-label="New terminal"
+              className="px-2.5 text-trakend-text-secondary hover:text-trakend-text-primary hover:bg-trakend-surface focus-ring"
+            >
+              <Plus size={16} />
+            </button>
+            <div className="relative flex items-stretch">
+              <button
+                onClick={() => setShellMenuOpen((o) => !o)}
+                aria-haspopup="menu"
+                aria-expanded={shellMenuOpen}
+                title="Choose shell"
+                className="px-1.5 text-trakend-text-secondary hover:text-trakend-text-primary hover:bg-trakend-surface border-r border-trakend-border focus-ring"
+              >
+                <ChevronDown size={14} />
+              </button>
+              {shellMenuOpen && (
+                <div role="menu" className="absolute left-0 top-full mt-1 z-50 w-64 py-1 rounded-lg border border-trakend-border bg-trakend-surface shadow-2xl">
+                  <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-trakend-text-secondary">New terminal with…</div>
+                  {shells.map((s) => (
+                    <button
+                      key={s.value}
+                      role="menuitem"
+                      onClick={() => addTab(s.value)}
+                      className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-left text-trakend-text-primary hover:bg-trakend-surface-light focus-ring"
+                    >
+                      <span className="flex items-center gap-2">
+                        <TerminalSquare size={14} className="text-trakend-text-secondary" />
+                        {s.label}
+                      </span>
+                      <span className="text-[10px] text-trakend-text-secondary font-mono truncate max-w-[110px]">{s.cmd !== 'auto' ? s.cmd : ''}</span>
+                    </button>
+                  ))}
+                  <div className="my-1 border-t border-trakend-border" />
+                  <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-trakend-text-secondary">Default for new tabs</div>
+                  <div className="px-3 pb-2">
+                    <select value={defaultShell} onChange={(e) => setDefaultShell(e.target.value)} className="w-full text-xs !py-1">
+                      {shells.map((s) => (
+                        <option key={s.value} value={s.value}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Right side: status chip */}
+        <div className="hidden md:flex items-center gap-2 px-3 border-l border-trakend-border flex-shrink-0">
+          <Badge tone={statusTone} dot pulse={activeInfo?.status === 'connected'} size="xs">
+            {statusLabel}
+          </Badge>
+          {activeInfo && activeInfo.cols > 0 && (
+            <span className="text-[11px] font-mono text-trakend-text-secondary tabular-nums" title="Columns × rows">
+              {activeInfo.cols}×{activeInfo.rows}
+            </span>
+          )}
+          {activeInfo?.createdAt && (
+            <span className="text-[11px] text-trakend-text-secondary tabular-nums" title="Session age">
+              {formatAge(activeInfo.createdAt, now)}
+            </span>
+          )}
+          {activeInfo?.shell && <span className="text-[11px] text-trakend-text-secondary font-mono">{activeInfo.shell}</span>}
+        </div>
       </div>
 
-      {/* Terminal Container */}
-      <div ref={containerRef} className="flex-1 overflow-hidden bg-trakend-dark" />
+      {/* Toolbar */}
+      <div className="flex items-center gap-1 px-2 h-9 bg-trakend-dark/70 border-b border-trakend-border flex-shrink-0 overflow-x-auto">
+        <Button size="xs" variant="ghost" icon={<ClipboardPaste size={13} />} onClick={doPaste} title="Paste (Ctrl+Shift+V / right-click)">
+          Paste
+        </Button>
+        <Button size="xs" variant="ghost" icon={<Copy size={13} />} onClick={doCopyAll} title="Copy entire scrollback">
+          Copy all
+        </Button>
+        <Button size="xs" variant="ghost" icon={<Eraser size={13} />} onClick={() => activePane()?.clear()} title="Clear screen (Ctrl+L)">
+          Clear
+        </Button>
+        <Button size="xs" variant="ghost" icon={<Search size={13} />} onClick={() => activePane()?.toggleSearch()} title="Find (Ctrl+Shift+F)">
+          Search
+        </Button>
+        <Button size="xs" variant="ghost" icon={<Download size={13} />} onClick={() => activePane()?.downloadLog()} title="Download scrollback as .txt">
+          Download log
+        </Button>
+
+        <div className="w-px h-5 bg-trakend-border mx-1" />
+
+        <div className="flex items-center gap-0.5" title="Font size (Ctrl+= / Ctrl+- / Ctrl+0)">
+          <Button size="xs" variant="ghost" iconOnly aria-label="Decrease font size" onClick={() => zoom(-1)} icon={<Minus size={13} />} />
+          <button
+            onClick={() => zoom(0)}
+            className="text-[11px] font-mono text-trakend-text-secondary w-9 text-center tabular-nums hover:text-trakend-text-primary focus-ring rounded"
+            title="Reset font size"
+          >
+            {fontSize}px
+          </button>
+          <Button size="xs" variant="ghost" iconOnly aria-label="Increase font size" onClick={() => zoom(1)} icon={<Plus size={13} />} />
+        </div>
+
+        <div className="w-px h-5 bg-trakend-border mx-1" />
+
+        <div className="relative" ref={settingsRef}>
+          <Button size="xs" variant="ghost" icon={<Keyboard size={13} />} onClick={() => setSettingsOpen((o) => !o)} aria-expanded={settingsOpen} title="Options & shortcuts">
+            Options
+          </Button>
+          {settingsOpen && (
+            <div className="absolute left-0 top-full mt-1 z-50 w-80 p-3 rounded-lg border border-trakend-border bg-trakend-surface shadow-2xl text-xs space-y-3">
+              <label className="flex items-center justify-between gap-3 cursor-pointer">
+                <span className="text-trakend-text-primary flex items-center gap-2">
+                  <MousePointerSquareDashed size={14} className="text-trakend-text-secondary" /> Copy on select
+                </span>
+                <input type="checkbox" checked={copyOnSelect} onChange={(e) => setCopyOnSelect(e.target.checked)} />
+              </label>
+              <div className="border-t border-trakend-border pt-2">
+                <div className="text-[10px] uppercase tracking-wider text-trakend-text-secondary mb-1.5">Keyboard shortcuts</div>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-trakend-text-secondary">
+                  <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd></dt><dd>Paste (also Ctrl+V, right-click, Shift+Ins)</dd>
+                  <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd></dt><dd>Copy selection (Ctrl+C copies when selected)</dd>
+                  <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></dt><dd>Find in scrollback</dd>
+                  <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></dt><dd>New tab</dd>
+                  <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd></dt><dd>Close tab</dd>
+                  <dt><kbd>Ctrl</kbd>+<kbd>PgUp</kbd>/<kbd>PgDn</kbd></dt><dd>Previous / next tab</dd>
+                  <dt><kbd>Ctrl</kbd>+<kbd>=</kbd> / <kbd>-</kbd> / <kbd>0</kbd></dt><dd>Font bigger / smaller / reset</dd>
+                  <dt><kbd>Alt</kbd>+scroll</dt><dd>Fast scroll</dd>
+                </dl>
+                <p className="mt-2 text-[10px] text-trakend-text-secondary">
+                  Some browsers reserve Ctrl+Shift+T/W for their own tabs; use the + button and middle-click when that happens.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex-1" />
+
+        {activeInfo && (activeInfo.status === 'gone' || activeInfo.status === 'exited' || activeInfo.status === 'error') && (
+          <Button size="xs" variant="primary" icon={<RotateCcw size={13} />} onClick={() => activePane()?.startNewSession()}>
+            New session
+          </Button>
+        )}
+        <Button
+          size="xs"
+          variant="ghost"
+          iconOnly
+          aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'}
+          onClick={toggleFullscreen}
+          icon={isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        />
+      </div>
+
+      {/* Panes — all mounted, only the active one visible */}
+      <div className="relative flex-1 min-h-0">
+        {tabs.length === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-trakend-text-secondary gap-3">
+            <TerminalSquare size={40} className="opacity-30" />
+            <div className="text-sm">No terminals open</div>
+            <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => addTab()}>
+              New terminal
+            </Button>
+          </div>
+        )}
+        {tabs.map((tab) => (
+          <TerminalPane
+            key={tab.id}
+            ref={(h) => {
+              paneRefs.current.set(tab.id, h)
+            }}
+            tabId={tab.id}
+            initialSessionId={tab.sessionId}
+            shell={tab.shell}
+            fontSize={fontSize}
+            copyOnSelect={copyOnSelect}
+            active={tab.id === activeTabId}
+            onInfo={handleInfo}
+            onSessionId={handleSessionId}
+            onTitle={handleTitle}
+            onBell={handleBell}
+          />
+        ))}
+      </div>
     </div>
   )
 }
+
+export default TerminalPage

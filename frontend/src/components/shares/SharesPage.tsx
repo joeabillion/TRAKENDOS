@@ -38,6 +38,8 @@ export const SharesPage: React.FC = () => {
     guestOk: false,
     validUsers: [] as string[],
     writableUsers: [] as string[],
+    timeMachine: false,
+    tmMaxSize: '',
   })
 
   const [editingShare, setEditingShare] = useState<SambaShare | null>(null)
@@ -136,7 +138,10 @@ export const SharesPage: React.FC = () => {
 
   const handleCreateShare = async () => {
     if (!newShareForm.name || !newShareForm.path) return
-    const result = await shares.createShare(newShareForm)
+    const result = await shares.createShare({
+      ...newShareForm,
+      tmMaxSize: newShareForm.timeMachine && newShareForm.tmMaxSize.trim() ? newShareForm.tmMaxSize.trim() : null,
+    })
     if (result) {
       setNewShareForm({
         name: '',
@@ -147,6 +152,8 @@ export const SharesPage: React.FC = () => {
         guestOk: false,
         validUsers: [],
         writableUsers: [],
+        timeMachine: false,
+        tmMaxSize: '',
       })
       setShowNewShareDialog(false)
       await loadShares()
@@ -174,8 +181,8 @@ export const SharesPage: React.FC = () => {
 
   const getDriveShares = () => {
     if (selectedDrive === null) return []
-    const drivePath = `/mnt/disk${selectedDrive}`
-    return sharesList.filter((s) => s.path.startsWith(drivePath))
+    const drivePath = `/mnt/disks/disk${selectedDrive}`
+    return sharesList.filter((s) => s.path === drivePath || s.path.startsWith(`${drivePath}/`))
   }
 
   const getSelectedShareDetails = () => {
@@ -220,6 +227,12 @@ export const SharesPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {shares.error && (
+        <div className="bg-trakend-error/10 border-b border-trakend-error px-4 py-2 text-sm text-trakend-error">
+          {shares.error}
+        </div>
+      )}
 
       {/* Tab Bar */}
       <div className="bg-trakend-surface border-b border-trakend-border px-4 py-3 flex gap-6">
@@ -387,6 +400,24 @@ export const SharesPage: React.FC = () => {
                         />
                         Guest OK
                       </label>
+                      <label className="flex items-center gap-2 text-sm text-trakend-text-primary">
+                        <input
+                          type="checkbox"
+                          checked={editingForm?.timeMachine || false}
+                          onChange={(e) => setEditingForm({ ...editingForm, timeMachine: e.target.checked })}
+                          className="rounded"
+                        />
+                        Time Machine target
+                      </label>
+                      {editingForm?.timeMachine && (
+                        <input
+                          type="text"
+                          placeholder="Max size (optional, e.g. 500G or 2T)"
+                          value={editingForm?.tmMaxSize || ''}
+                          onChange={(e) => setEditingForm({ ...editingForm, tmMaxSize: e.target.value })}
+                          className="w-full px-3 py-2 rounded-lg bg-trakend-dark border border-trakend-border text-trakend-text-primary text-sm focus:outline-none focus:border-trakend-accent"
+                        />
+                      )}
                     </div>
 
                     <div className="flex gap-2 pt-4">
@@ -444,6 +475,14 @@ export const SharesPage: React.FC = () => {
                         <div>
                           <p className="text-xs text-trakend-text-secondary uppercase tracking-wide mb-1">Guest OK</p>
                           <p className="text-sm text-trakend-text-primary">{getSelectedShareDetails()?.guestOk ? 'Yes' : 'No'}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-trakend-text-secondary uppercase tracking-wide mb-1">Time Machine</p>
+                          <p className="text-sm text-trakend-text-primary">
+                            {getSelectedShareDetails()?.timeMachine
+                              ? `Yes${getSelectedShareDetails()?.tmMaxSize ? ` (max ${getSelectedShareDetails()?.tmMaxSize})` : ''}`
+                              : 'No'}
+                          </p>
                         </div>
                       </div>
 
@@ -624,7 +663,7 @@ export const SharesPage: React.FC = () => {
 
             <input
               type="text"
-              placeholder="Path (e.g., /mnt/disk0/myshare)"
+              placeholder="Path (e.g., /mnt/disks/disk1/myshare)"
               value={newShareForm.path}
               onChange={(e) => setNewShareForm({ ...newShareForm, path: e.target.value })}
               className="w-full px-3 py-2 rounded-lg bg-trakend-dark border border-trakend-border text-trakend-text-primary mb-3 text-sm focus:outline-none focus:border-trakend-accent"
@@ -666,6 +705,24 @@ export const SharesPage: React.FC = () => {
                 />
                 Guest OK
               </label>
+              <label className="flex items-center gap-2 text-sm text-trakend-text-primary">
+                <input
+                  type="checkbox"
+                  checked={newShareForm.timeMachine}
+                  onChange={(e) => setNewShareForm({ ...newShareForm, timeMachine: e.target.checked })}
+                  className="rounded"
+                />
+                Time Machine target
+              </label>
+              {newShareForm.timeMachine && (
+                <input
+                  type="text"
+                  placeholder="Max size (optional, e.g. 500G or 2T)"
+                  value={newShareForm.tmMaxSize}
+                  onChange={(e) => setNewShareForm({ ...newShareForm, tmMaxSize: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-trakend-dark border border-trakend-border text-trakend-text-primary text-sm focus:outline-none focus:border-trakend-accent"
+                />
+              )}
             </div>
 
             <div className="flex gap-3 justify-end">

@@ -201,6 +201,89 @@ export class ArrayService {
 
       CREATE INDEX IF NOT EXISTS idx_smart_serial ON drive_smart_history(drive_serial, timestamp);
     `);
+
+    // Migration: stable identity for drives. /dev/sdX letters change between boots and
+    // USB enclosures report one serial for every bay, so we persist the filesystem UUID
+    // (or PARTUUID for parity drives with no filesystem) and resolve the device from it.
+    try { this.db.exec('ALTER TABLE array_drives ADD COLUMN fs_uuid TEXT'); } catch { /* exists */ }
+    try { this.db.exec('ALTER TABLE array_drives ADD COLUMN part_uuid TEXT'); } catch { /* exists */ }
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Stable device identity (UUID) helpers
+  // ──────────────────────────────────────────────────────
+
+  /** First partition of a disk (handles sda1, nvme0n1p1, mmcblk0p1), or the disk itself. */
+  private getMountablePartition(device: string): string {
+    try {
+      const out = execSync(`lsblk -ln -o NAME,TYPE "${device}" 2>/dev/null`, { encoding: 'utf-8' });
+      const parts = out.trim().split('\n').map(l => l.trim().split(/\s+/)).filter(p => p[1] === 'part');
+      if (parts.length > 0) return `/dev/${parts[0][0]}`;
+    } catch { /* fall through */ }
+    return device;
+  }
+
+  /** Filesystem UUID + PARTUUID for a disk's mountable partition. */
+  private getDeviceUuids(device: string): { fs_uuid: string; part_uuid: string } {
+    const partDev = this.getMountablePartition(device);
+    const read = (tag: string, dev: string) => {
+      try { return execSync(`blkid -s ${tag} -o value "${dev}" 2>/dev/null`, { encoding: 'utf-8' }).trim(); } catch { return ''; }
+    };
+    return {
+      fs_uuid: read('UUID', partDev) || read('UUID', device),
+      part_uuid: read('PARTUUID', partDev),
+    };
+  }
+
+  /** Resolve {disk, part} device paths from a stored UUID. Empty strings if not present. */
+  private resolveDeviceByUuid(fsUuid?: string | null, partUuid?: string | null): { disk: string; part: string } {
+    const tryLink = (dir: string, id: string) => {
+      try {
+        const p = `${dir}/${id}`;
+        if (!fs.existsSync(p)) return null;
+        const part = fs.realpathSync(p); // e.g. /dev/sdc1 or /dev/nvme1n1p4
+        const pk = execSync(`lsblk -no PKNAME "${part}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+        return { disk: pk ? `/dev/${pk}` : part, part };
+      } catch { return null; }
+    };
+    if (fsUuid) { const d = tryLink('/dev/disk/by-uuid', fsUuid); if (d) return d; }
+    if (partUuid) { const d = tryLink('/dev/disk/by-partuuid', partUuid); if (d) return d; }
+    return { disk: '', part: '' };
+  }
+
+  /**
+   * Before scanning, walk every assignment and fix its stored /dev path using the UUID.
+   * This is what makes the array survive drive re-lettering and duplicate USB serials.
+   */
+  private reconcileAssignedDevices(): void {
+    const rows = this.db.prepare('SELECT drive_id, device, serial, fs_uuid, part_uuid FROM array_drives').all() as any[];
+    for (const row of rows) {
+      // Backfill UUIDs for legacy rows that only have a /dev path
+      if (!row.fs_uuid && !row.part_uuid && row.device && fs.existsSync(row.device)) {
+        const ids = this.getDeviceUuids(row.device);
+        if (ids.fs_uuid || ids.part_uuid) {
+          this.db.prepare('UPDATE array_drives SET fs_uuid = ?, part_uuid = ? WHERE drive_id = ?')
+            .run(ids.fs_uuid || null, ids.part_uuid || null, row.drive_id);
+          row.fs_uuid = ids.fs_uuid; row.part_uuid = ids.part_uuid;
+          this.logger.info('ARRAY', `Recorded UUID for ${row.drive_id}: ${ids.fs_uuid || ids.part_uuid}`);
+        }
+        continue;
+      }
+      const { disk, part } = this.resolveDeviceByUuid(row.fs_uuid, row.part_uuid);
+      if (!disk) continue;
+      // Already pointing at this disk (either as whole disk or as its partition, e.g. the
+      // OS /data partition /dev/nvme1n1p4) — nothing to do. Never rewrite a partition row
+      // to its parent disk: that would make slot 1 look like the whole OS drive.
+      if (row.device === disk || row.device === part) continue;
+      // Keep the same granularity the row was created with
+      let rowIsPartition = false;
+      try { rowIsPartition = execSync(`lsblk -dno TYPE "${row.device}" 2>/dev/null`, { encoding: 'utf-8' }).trim() === 'part'; } catch { rowIsPartition = /p\d+$|[a-z]\d+$/.test(row.device) && !fs.existsSync(row.device); }
+      const resolved = rowIsPartition ? part : disk;
+      if (resolved && resolved !== row.device) {
+        this.logger.warn('ARRAY', `Drive ${row.drive_id} moved: ${row.device} → ${resolved} (matched by UUID)`);
+        this.db.prepare('UPDATE array_drives SET device = ? WHERE drive_id = ?').run(resolved, row.drive_id);
+      }
+    }
   }
 
   private loadArrayConfig(): ArrayConfig {
@@ -275,6 +358,9 @@ export class ArrayService {
   async scanDrives(): Promise<PhysicalDrive[]> {
     const drives: PhysicalDrive[] = [];
 
+    // Fix stale /dev paths first so the device-path match below is trustworthy
+    try { this.reconcileAssignedDevices(); } catch (e) { this.logger.warn('ARRAY', `UUID reconcile failed: ${e}`); }
+
     try {
       // Get block device list
       const lsblkOutput = execSync(
@@ -324,19 +410,20 @@ export class ArrayService {
 
         // Check existing assignment — prefer device path match over serial match
         // (USB enclosures can report the same serial for multiple drives)
-        let assignment = this.db.prepare(
+        // reconcileAssignedDevices() already rewrote stale paths from UUIDs, so a device-path
+        // match is authoritative. Never fall back to serial alone (USB bays share serials).
+        const assignment = this.db.prepare(
           'SELECT * FROM array_drives WHERE device = ?'
         ).get(devPath) as any;
-        if (!assignment && dev.serial) {
-          // Only fall back to serial match if no other drive already claimed this serial for a different device
-          const serialMatch = this.db.prepare(
-            'SELECT * FROM array_drives WHERE serial = ? AND device = ?'
-          ).get(dev.serial, devPath) as any;
-          if (serialMatch) assignment = serialMatch;
-        }
+
+        // Unassigned drives get an id that is unique per physical device even when the
+        // enclosure reports a duplicate serial (serial + kernel name).
+        const unassignedId = dev.serial
+          ? (drives.some(d => d.serial === (dev.serial || '').trim()) ? `${dev.serial}-${dev.name}` : dev.serial)
+          : `drive-${dev.name}`;
 
         const drive: PhysicalDrive = {
-          id: assignment?.drive_id || dev.serial || `drive-${dev.name}`,
+          id: assignment?.drive_id || unassignedId,
           device: devPath,
           model: (dev.model || 'Unknown').trim(),
           serial: (dev.serial || '').trim(),
@@ -624,10 +711,11 @@ export class ArrayService {
     this.db.prepare('DELETE FROM array_drives WHERE drive_id = ?').run(driveId);
 
     // Create new assignment
+    const ids = this.getDeviceUuids(drive.device);
     this.db.prepare(`
-      INSERT INTO array_drives (drive_id, device, serial, role, slot, added_at, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'new')
-    `).run(driveId, drive.device, drive.serial, role, slot, Date.now());
+      INSERT INTO array_drives (drive_id, device, serial, role, slot, added_at, status, fs_uuid, part_uuid)
+      VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?)
+    `).run(driveId, drive.device, drive.serial, role, slot, Date.now(), ids.fs_uuid || null, ids.part_uuid || null);
 
     drive.role = role;
     drive.slot = slot;
@@ -653,6 +741,193 @@ export class ArrayService {
 
   getAssignedDrives(): ArrayDriveAssignment[] {
     return this.db.prepare('SELECT * FROM array_drives ORDER BY role, slot').all() as ArrayDriveAssignment[];
+  }
+
+  /**
+   * Called once at process boot. Whatever state the DB persisted (running/starting/
+   * stopping/error/rebuilding) is stale — nothing is mounted by us yet. Reset to
+   * 'stopped' so startArray() performs a full reconcile instead of rejecting.
+   */
+  resetStateForBoot(): string {
+    const prev = this.arrayConfig.state;
+    this.arrayConfig.state = 'stopped';
+    // A parity op cannot survive a restart; mark it so the UI doesn't show a ghost job
+    if (this.arrayConfig.parity_state === 'building' || this.arrayConfig.parity_state === 'checking') {
+      this.arrayConfig.parity_state = 'invalid';
+      this.logger.warn('ARRAY', `Parity operation was interrupted by restart (was ${prev}) — parity marked invalid, re-run sync`);
+    }
+    this.saveArrayConfig();
+    return prev;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // fstab ownership — the array is the single source of truth for its mounts
+  // ──────────────────────────────────────────────────────
+
+  private static readonly FSTAB_BEGIN = '# >>> TRAKEND ARRAY (managed — do not edit between markers) >>>';
+  private static readonly FSTAB_END = '# <<< TRAKEND ARRAY <<<';
+
+  /**
+   * Rewrite the managed block in /etc/fstab with one UUID= line per mounted data/cache
+   * drive at its slot path (nofail so a missing disk never blocks boot). Any pre-existing
+   * line referencing the same UUID at a different path is removed — that is exactly the
+   * legacy /mnt/disks/usb1-style entry that fought the array on this server.
+   */
+  private writeManagedFstab(): void {
+    const fstabPath = '/etc/fstab';
+    if (!fs.existsSync(fstabPath)) return;
+
+    const assignments = this.getAssignedDrives() as any[];
+    const managed: string[] = [];
+    const ourUuids = new Set<string>();
+
+    // The OS data partition must never be touched — resolve its device once.
+    let dataSrc = '';
+    try { dataSrc = execSync('findmnt -n -o SOURCE /data 2>/dev/null', { encoding: 'utf-8' }).trim().split('[')[0]; } catch { /* ignore */ }
+    let dataReal = '';
+    try { if (dataSrc) dataReal = fs.realpathSync(dataSrc); } catch { dataReal = dataSrc; }
+    const isDataDevice = (dev: string) => {
+      if (!dev || !dataReal) return false;
+      try { return fs.realpathSync(dev) === dataReal; } catch { return dev === dataSrc; }
+    };
+
+    for (const a of assignments) {
+      if (a.role !== 'data' && a.role !== 'cache') continue;
+      const drive = this.drives.get(a.drive_id);
+      if (!drive?.mount_point) continue;
+
+      const mountPoint = a.role === 'cache' ? '/mnt/disks/cache' : `/mnt/disks/disk${a.slot}`;
+      const partDev = this.getMountablePartition(drive.device);
+
+      // Slot that IS the OS /data partition → bind entry, never a UUID line
+      if (isDataDevice(partDev) || isDataDevice(drive.device)) {
+        if (drive.mount_point === mountPoint) managed.push(`/data  ${mountPoint}  none  bind,nofail  0  0`);
+        continue;
+      }
+
+      let uuid = a.fs_uuid || '';
+      let fsType = '';
+      try { if (!uuid) uuid = execSync(`blkid -s UUID -o value "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim(); } catch { /* ignore */ }
+      try { fsType = execSync(`blkid -s TYPE -o value "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim(); } catch { /* ignore */ }
+      if (!uuid || !fsType) continue;
+
+      // Preserve a deliberate read-only mount
+      let ro = false;
+      try { ro = /(^|,)ro(,|$)/.test(execSync(`findmnt -n -o OPTIONS "${drive.mount_point}" 2>/dev/null`, { encoding: 'utf-8' }).trim()); } catch { /* ignore */ }
+
+      ourUuids.add(uuid);
+      managed.push(`UUID=${uuid}  ${mountPoint}  ${fsType}  ${ro ? 'ro' : 'defaults'},noatime,nofail,x-systemd.device-timeout=15  0  2`);
+    }
+
+    const original = fs.readFileSync(fstabPath, 'utf-8');
+    const lines = original.split('\n');
+    const out: string[] = [];
+    let inBlock = false;
+    const removed: string[] = [];
+
+    for (const line of lines) {
+      if (line.trim() === ArrayService.FSTAB_BEGIN) { inBlock = true; continue; }
+      if (line.trim() === ArrayService.FSTAB_END) { inBlock = false; continue; }
+      if (inBlock) continue; // drop old managed content
+
+      // Drop unmanaged lines that point one of OUR disks at a /mnt path (legacy names like
+      // /mnt/disks/usb1). Lines whose target is outside /mnt/ (/, /boot, /data, swap, binds)
+      // are never removed, whatever their source.
+      const t = line.trim();
+      if (t && !t.startsWith('#')) {
+        const cols = t.split(/\s+/);
+        const src = cols[0] || '';
+        const target = cols[1] || '';
+        if (target.startsWith('/mnt/')) {
+          const uuidMatch = src.startsWith('UUID=') && ourUuids.has(src.slice(5));
+          const pathMatch = /^\/mnt\/disks\/(disk\d+|cache|usb\d+|disk\d+-[\w-]+)$/.test(target);
+          if (uuidMatch || pathMatch) { removed.push(t); continue; }
+        }
+      }
+      out.push(line);
+    }
+
+    while (out.length && out[out.length - 1].trim() === '') out.pop();
+    out.push('', ArrayService.FSTAB_BEGIN, ...managed, ArrayService.FSTAB_END, '');
+
+    const next = out.join('\n');
+    if (next === original) return;
+
+    fs.copyFileSync(fstabPath, `${fstabPath}.trakend.bak`);
+    fs.writeFileSync(`${fstabPath}.tmp`, next, { mode: 0o644 });
+    fs.renameSync(`${fstabPath}.tmp`, fstabPath);
+    try { execSync('systemctl daemon-reload', { timeout: 15000 }); } catch { /* ignore */ }
+
+    this.logger.info('ARRAY', `fstab updated: ${managed.length} managed mount(s)` + (removed.length ? `; removed ${removed.length} conflicting line(s)` : ''));
+    for (const r of removed) this.logger.warn('ARRAY', `fstab: removed legacy entry → ${r}`);
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Runtime watchdog — a data drive dropping out must never go unnoticed
+  // ──────────────────────────────────────────────────────
+
+  private mountWatchdog?: NodeJS.Timeout;
+  private watchdogFailStreak = 0;
+
+  private startMountWatchdog(): void {
+    this.stopMountWatchdog();
+    this.watchdogFailStreak = 0;
+    this.mountWatchdog = setInterval(() => this.checkMountsOnce(), 20000);
+    this.mountWatchdog.unref();
+  }
+
+  private stopMountWatchdog(): void {
+    if (this.mountWatchdog) { clearInterval(this.mountWatchdog); this.mountWatchdog = undefined; }
+  }
+
+  private checkMountsOnce(): void {
+    if (this.arrayConfig.state !== 'running') return;
+    const problems: string[] = [];
+    for (const a of this.getAssignedDrives()) {
+      if (a.role !== 'data') continue;
+      const mp = `/mnt/disks/disk${a.slot}`;
+      const drive = this.drives.get(a.drive_id);
+      const devPresent = !!(drive?.device && fs.existsSync(drive.device)) || (!!a.device && fs.existsSync(a.device));
+      let mounted = false;
+      try { mounted = execSync(`findmnt -n -o TARGET "${mp}" 2>/dev/null`, { encoding: 'utf-8' }).trim() === mp; } catch { /* no */ }
+      if (!devPresent) problems.push(`slot ${a.slot}: device ${drive?.device || a.device} disappeared`);
+      else if (!mounted) problems.push(`slot ${a.slot}: ${mp} is no longer mounted`);
+      if (drive) drive.mount_point = mounted ? mp : undefined;
+    }
+
+    if (problems.length === 0) { this.watchdogFailStreak = 0; return; }
+
+    // Require two consecutive failures (40 s) to avoid flapping on a transient USB hiccup
+    this.watchdogFailStreak++;
+    if (this.watchdogFailStreak < 2) {
+      this.logger.warn('ARRAY', `Mount check failed (will re-check): ${problems.join('; ')}`);
+      return;
+    }
+
+    this.arrayConfig.state = 'error';
+    this.saveArrayConfig();
+    this.stopMountWatchdog();
+    this.logger.error('ARRAY', `ARRAY FAULT — ${problems.join('; ')}. State set to ERROR. Fix the drive and start the array again.`);
+
+    // Stop only the containers that use the failed slot paths, so their writes can't land
+    // on the root filesystem. Containers on /data (web stack, DB, tunnel) keep running.
+    const failedPaths = problems.map(p => p.match(/\/mnt\/disks\/disk\d+/)?.[0]).filter(Boolean) as string[];
+    const failedSlots = problems.map(p => p.match(/slot (\d+)/)?.[1]).filter(Boolean).map(s => `/mnt/disks/disk${s}`);
+    const affected = new Set([...failedPaths, ...failedSlots]);
+    if (affected.size === 0) return;
+    try {
+      const out = execSync(`docker ps -q | xargs -r docker inspect -f '{{.Name}}|{{range .Mounts}}{{.Source}};{{end}}' 2>/dev/null`, { encoding: 'utf-8', timeout: 30000 });
+      const toStop: string[] = [];
+      for (const line of out.split('\n')) {
+        const [name, mounts = ''] = line.split('|');
+        if (!name) continue;
+        if (mounts.split(';').some(src => [...affected].some(p => src === p || src.startsWith(p + '/')))) toStop.push(name.replace(/^\//, ''));
+      }
+      if (toStop.length) {
+        execSync(`docker stop ${toStop.map(n => `"${n}"`).join(' ')} 2>/dev/null || true`, { timeout: 120000 });
+        this.logger.warn('ARRAY', `Stopped containers using the failed disk: ${toStop.join(', ')}`);
+      }
+    } catch { /* docker down */ }
   }
 
   async startArray(): Promise<void> {
@@ -732,29 +1007,67 @@ export class ArrayService {
         const mountPoint = `/mnt/disks/disk${assignment.slot}`;
         fs.mkdirSync(mountPoint, { recursive: true });
 
-        // Find the mountable partition (first partition, or whole device if no partitions)
-        let partDev = devicePath;
-        try {
-          const firstPart = execSync(`lsblk -ln -o NAME "${devicePath}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
-          if (firstPart) partDev = `/dev/${firstPart}`;
-        } catch { /* use whole device */ }
+        // Find the mountable partition (handles sdX1 / nvmeXn1p1 / whole-disk filesystems)
+        const partDev = this.getMountablePartition(devicePath);
 
         this.logger.info('ARRAY', `Slot ${assignment.slot}: device=${devicePath} partDev=${partDev} driveMapHit=${!!drive}`);
 
-        // Check if already mounted at the right place
+        // Where is it mounted right now? (findmnt lists every mountpoint for a source)
+        let currentMounts: string[] = [];
         try {
-          const currentMount = execSync(`findmnt -n -o TARGET "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim();
-          if (currentMount === mountPoint) {
-            if (drive) drive.mount_point = mountPoint;
-            this.logger.info('ARRAY', `${partDev} already mounted at ${mountPoint}`);
-            continue;
-          }
-          // If mounted elsewhere, unmount first
-          if (currentMount) {
-            this.logger.info('ARRAY', `${partDev} mounted at ${currentMount}, remounting to ${mountPoint}`);
-            try { execSync(`umount "${currentMount}" 2>/dev/null`, { timeout: 10000 }); } catch { /* ignore */ }
-          }
+          currentMounts = execSync(`findmnt -n -o TARGET "${partDev}" 2>/dev/null`, { encoding: 'utf-8' })
+            .split('\n').map(s => s.trim()).filter(Boolean);
         } catch { /* not mounted anywhere */ }
+
+        if (currentMounts.includes(mountPoint)) {
+          if (drive) drive.mount_point = mountPoint;
+          successfulMounts++;
+          this.logger.info('ARRAY', `${partDev} already mounted at ${mountPoint}`);
+          continue;
+        }
+
+        // Special case: the OS data partition (/data) is a valid array member but must never
+        // be unmounted — bind-mount it to its slot path instead.
+        let isDataPartition = currentMounts.includes('/data');
+        if (!isDataPartition) {
+          try {
+            const dataSrc = execSync('findmnt -n -o SOURCE /data 2>/dev/null', { encoding: 'utf-8' }).trim().split('[')[0];
+            isDataPartition = !!dataSrc && fs.realpathSync(dataSrc) === fs.realpathSync(partDev);
+          } catch { /* ignore */ }
+        }
+        if (isDataPartition) {
+          try {
+            execSync(`mount --bind /data "${mountPoint}"`, { timeout: 10000 });
+            if (drive) drive.mount_point = mountPoint;
+            successfulMounts++;
+            this.logger.info('ARRAY', `Slot ${assignment.slot} is the OS data partition — bind-mounted /data at ${mountPoint}`);
+          } catch (err) {
+            this.logger.error('ARRAY', `Failed to bind-mount /data at ${mountPoint}: ${err}`);
+            if (drive) drive.mount_point = undefined;
+          }
+          continue;
+        }
+
+        // Mounted somewhere else (legacy path like /mnt/disks/usb1) — relocate to the slot path.
+        // Remember if it was deliberately read-only so we don't flip it (and so the kernel
+        // doesn't refuse a second rw mount of an ro superblock).
+        let wasReadOnly = false;
+        for (const cm of currentMounts) {
+          try { wasReadOnly = wasReadOnly || /(^|,)ro(,|$)/.test(execSync(`findmnt -n -o OPTIONS "${cm}" 2>/dev/null`, { encoding: 'utf-8' }).trim()); } catch { /* ignore */ }
+          this.logger.info('ARRAY', `${partDev} mounted at ${cm}, remounting to ${mountPoint}`);
+          let unmounted = false;
+          for (let attempt = 0; attempt < 3 && !unmounted; attempt++) {
+            try { execSync(`umount "${cm}"`, { timeout: 10000, stdio: 'pipe' }); unmounted = true; }
+            catch { try { execSync('sleep 1'); } catch { /* ignore */ } }
+          }
+          if (!unmounted) {
+            let holders = '';
+            try { holders = execSync(`fuser -vm "${cm}" 2>&1 | tail -n +2 | head -5`, { encoding: 'utf-8' }).trim(); } catch { /* ignore */ }
+            // ext4/xfs allow the same device at two paths (shared superblock); the old path
+            // goes away once its users close. Log the holders so the admin can see who.
+            this.logger.warn('ARRAY', `${cm} is busy — mounting ${mountPoint} alongside it. Holders: ${holders || 'unknown'}`);
+          }
+        }
 
         // Get filesystem type for explicit mount
         let fsType = drive?.filesystem || '';
@@ -766,9 +1079,10 @@ export class ArrayService {
 
         // Mount with explicit fs type if known
         try {
+          const opts = wasReadOnly ? 'ro,noatime' : 'noatime';
           const mountCmd = fsType
-            ? `mount -t ${fsType} "${partDev}" "${mountPoint}"`
-            : `mount "${partDev}" "${mountPoint}"`;
+            ? `mount -t ${fsType} -o ${opts} "${partDev}" "${mountPoint}"`
+            : `mount -o ${opts} "${partDev}" "${mountPoint}"`;
           execSync(mountCmd, { timeout: 10000 });
           if (drive) drive.mount_point = mountPoint;
           this.logger.info('ARRAY', `Mounted ${partDev} (${fsType || 'auto'}) at ${mountPoint}`);
@@ -792,24 +1106,20 @@ export class ArrayService {
         const mountPoint = '/mnt/disks/cache';
         fs.mkdirSync(mountPoint, { recursive: true });
 
+        const partDev = this.getMountablePartition(drive.device);
+
         // Check if already mounted
         try {
-          const currentMount = execSync(`findmnt -n -o TARGET "${drive.device}" 2>/dev/null || findmnt -n -o TARGET "${drive.device}1" 2>/dev/null`, { encoding: 'utf-8' }).trim();
+          const currentMount = execSync(`findmnt -n -o TARGET "${partDev}" 2>/dev/null`, { encoding: 'utf-8' }).trim().split('\n')[0];
           if (currentMount) {
             drive.mount_point = currentMount;
-            this.logger.info('ARRAY', `Cache ${drive.device} already mounted at ${currentMount}`);
+            this.logger.info('ARRAY', `Cache ${partDev} already mounted at ${currentMount}`);
             continue;
           }
         } catch { /* not mounted */ }
 
-        let partDev = drive.device;
         try {
-          const firstPart = execSync(`lsblk -ln -o NAME "${drive.device}" | tail -n +2 | head -1`, { encoding: 'utf-8' }).trim();
-          if (firstPart) partDev = `/dev/${firstPart}`;
-        } catch { /* use whole device */ }
-
-        try {
-          execSync(`mount "${partDev}" "${mountPoint}"`, { timeout: 10000 });
+          execSync(`mount -o noatime "${partDev}" "${mountPoint}"`, { timeout: 10000 });
           drive.mount_point = mountPoint;
           this.logger.info('ARRAY', `Mounted cache ${partDev} at ${mountPoint}`);
         } catch (err) {
@@ -902,19 +1212,21 @@ export class ArrayService {
         this.saveArrayConfig();
         const unmountedList = unmountedDataDrives.map(d => `${d.drive_id} (slot ${d.slot})`).join(', ');
         this.logger.error('ARRAY', `Array startup FAILED — ${unmountedDataDrives.length} data drive(s) not mounted: ${unmountedList}`);
-        // Unmount any drives that did mount since we're aborting
-        for (const assignment of dataDrives) {
-          const d = this.drives.get(assignment.drive_id);
-          if (d?.mount_point) {
-            try { execSync(`umount "${d.mount_point}" 2>/dev/null`, { timeout: 5000 }); } catch { /* ignore */ }
-            d.mount_point = undefined;
-          }
-        }
+        // Leave whatever did mount in place (ripping mounts out from under Samba/Docker
+        // would send their writes to the root filesystem). State is ERROR; the UI tells
+        // the admin which slot to fix, and the next Start reconciles everything.
         throw new Error(`Array startup aborted — all data drives must be mounted. Failed: ${unmountedList}`);
       } else {
         this.arrayConfig.state = 'running';
         this.logger.info('ARRAY', `Array started. ${successfulMounts} data drive(s) mounted, ${parityDrives.length} parity drive(s).`);
       }
+
+      // Persist the mounts by UUID so they come back at the right slot after a reboot,
+      // and drop any legacy fstab lines that point the same disk at an old path.
+      try { this.writeManagedFstab(); } catch (e) { this.logger.warn('ARRAY', `fstab update failed: ${e}`); }
+
+      // Start watching for drives dropping out while running
+      this.startMountWatchdog();
 
       // Start Docker only if we have at least one data drive mounted
       if (successfulMounts > 0) {
@@ -933,6 +1245,13 @@ export class ArrayService {
       } else {
         this.logger.warn('ARRAY', 'Docker not started — no data drives mounted');
       }
+
+      // Bring network shares back (stopArray takes them down so unmounts succeed)
+      try {
+        execSync('systemctl start smbd nmbd 2>/dev/null || true', { timeout: 30000 });
+        execSync('systemctl is-enabled nfs-server >/dev/null 2>&1 && systemctl start nfs-server || true', { timeout: 30000 });
+        this.logger.info('ARRAY', 'Network shares started');
+      } catch { /* samba not installed */ }
 
       // Set up spin-down timers
       if (this.arrayConfig.spin_down_delay > 0) {
@@ -955,12 +1274,19 @@ export class ArrayService {
     this.arrayConfig.state = 'stopping';
     this.saveArrayConfig();
     this.logger.info('ARRAY', 'Stopping array...');
+    this.stopMountWatchdog();
 
     // Clear spin-down timers
     for (const [, timer] of this.spinDownTimers) {
       clearTimeout(timer);
     }
     this.spinDownTimers.clear();
+
+    // Network shares hold files open on the array — stop them first so unmounts succeed
+    try {
+      execSync('systemctl stop smbd nmbd nfs-server 2>/dev/null || true', { timeout: 30000 });
+      this.logger.info('ARRAY', 'Stopped SMB/NFS services');
+    } catch { /* not installed */ }
 
     // Stop Docker before unmounting drives
     try {
@@ -976,23 +1302,39 @@ export class ArrayService {
       this.logger.info('ARRAY', 'Docker was not running');
     }
 
-    // Unmount ALL drives (data, cache, unassigned)
+    // Unmount ALL drives (data, cache, unassigned). Retry busy mounts; never silently
+    // lazy-unmount a data disk (a lazy unmount leaves it live and blocks the next start).
     const assignments = this.getAssignedDrives();
+    const stillBusy: string[] = [];
     for (const assignment of assignments) {
-      let mountPoint: string;
-      if (assignment.role === 'cache') {
-        mountPoint = '/mnt/disks/cache';
-      } else {
-        mountPoint = `/mnt/disks/disk${assignment.slot}`;
+      if (assignment.role === 'parity' || assignment.role === 'parity2' || assignment.role === 'hot_spare') continue;
+      const mountPoint = assignment.role === 'cache' ? '/mnt/disks/cache' : `/mnt/disks/disk${assignment.slot}`;
+      let isMounted = false;
+      try { isMounted = execSync(`findmnt -n -o TARGET "${mountPoint}" 2>/dev/null`, { encoding: 'utf-8' }).trim() === mountPoint; } catch { /* not mounted */ }
+      if (!isMounted) continue;
+
+      let done = false;
+      for (let attempt = 0; attempt < 5 && !done; attempt++) {
+        try { execSync(`umount "${mountPoint}"`, { timeout: 30000, stdio: 'pipe' }); done = true; }
+        catch { try { execSync('sleep 2'); } catch { /* ignore */ } }
       }
-      try {
-        execSync(`umount "${mountPoint}" 2>/dev/null`, { timeout: 30000 });
+      if (done) {
         this.logger.info('ARRAY', `Unmounted ${mountPoint}`);
-      } catch {
-        try {
-          execSync(`umount -l "${mountPoint}" 2>/dev/null`);
-        } catch { /* ignore */ }
+      } else {
+        let holders = '';
+        try { holders = execSync(`fuser -vm "${mountPoint}" 2>&1 | tail -n +2 | head -8`, { encoding: 'utf-8' }).trim(); } catch { /* ignore */ }
+        this.logger.error('ARRAY', `Cannot unmount ${mountPoint} — in use:\n${holders || 'unknown process'}`);
+        stillBusy.push(mountPoint);
       }
+    }
+
+    if (stillBusy.length > 0) {
+      // Docker and Samba are already down and some slots are unmounted — this is neither
+      // "running" nor "stopped". Report ERROR; "Start array" remounts everything and
+      // brings Docker/Samba back.
+      this.arrayConfig.state = 'error';
+      this.saveArrayConfig();
+      throw new Error(`Array stop incomplete — still in use: ${stillBusy.join(', ')}. Close open files/terminals in those paths, then Stop again or Start to recover.`);
     }
 
     // Also unmount any unassigned drives that were mounted during startArray

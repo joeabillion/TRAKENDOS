@@ -1,0 +1,38 @@
+# Trakend OS main service.
+# SOURCE OF TRUTH: installer/systemd/trakend-os.service in the Trakend OS repo.
+# Installed by installer/build-iso.sh (ISO) and scripts/apply-systemd-units.sh (existing servers).
+#
+# Notes:
+#  - No Requires=/After=docker.service: the array starts Docker itself, and a
+#    Requires= dependency would make "stop array" (stop docker) kill the backend.
+#  - ConditionPathExists on both build artifacts prevents a crash-loop when a
+#    half-finished update left dist/ missing.
+#  - ConditionKernelCommandLine=!trakend.safemode=1 guarantees this unit and
+#    trakend-safemode.service can never fight over port 80.
+[Unit]
+Description=Trakend OS Server Management Platform
+After=network-online.target local-fs.target
+Wants=network-online.target
+RequiresMountsFor=/data
+StartLimitIntervalSec=300
+StartLimitBurst=10
+ConditionPathExists=/opt/trakend/os/backend/dist/index.js
+ConditionPathExists=/opt/trakend/os/frontend/dist/index.html
+ConditionKernelCommandLine=!trakend.safemode=1
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trakend/os
+ExecStartPre=/bin/mkdir -p /data/docker /data/mysql /data/db /data/logs /data/backups /data/shares /data/appdata
+ExecStart=/usr/bin/node /opt/trakend/os/ws-wrapper.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+KillMode=mixed
+EnvironmentFile=-/opt/trakend/os/backend/.env
+Environment=NODE_ENV=production
+Environment=PORT=80
+
+[Install]
+WantedBy=multi-user.target

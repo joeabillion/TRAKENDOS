@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react'
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { useState, useEffect, useCallback } from 'react'
+import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom'
 import { ThemeProvider } from './context/ThemeContext'
-import { WebSocketProvider } from './context/WebSocketContext'
+import { WebSocketProvider, useWebSocket } from './context/WebSocketContext'
+import { ToastProvider } from './components/common/Toast'
+import { ConfirmProvider } from './components/common/ConfirmDialog'
 import { Sidebar } from './components/common/Sidebar'
 import { TopBar } from './components/common/TopBar'
 import { Dashboard } from './components/dashboard/Dashboard'
@@ -15,18 +17,57 @@ import ArrayPage from './components/array/ArrayPage'
 import { FileBrowserPage } from './components/files/FileBrowserPage'
 import { SharesPage } from './components/shares/SharesPage'
 import { BootScreen } from './components/auth/BootScreen'
-import { LoginPage } from './components/auth/LoginPage'
+import { LoginPage, LoginResult } from './components/auth/LoginPage'
 import api from './utils/api'
+import { Loader2, WifiOff } from 'lucide-react'
 
 type AppState = 'booting' | 'login' | 'authenticated'
 
-function AppLayout() {
+/** Single app-wide banner shown while the stats socket is down (widgets stay quiet). */
+function ConnectionBanner() {
+  const { connected, reconnecting, reconnectAttempt, reconnectNow } = useWebSocket()
+  if (connected) return null
   return (
-    <div className="flex h-screen w-screen bg-trakend-dark overflow-hidden">
-      <Sidebar />
-      <div className="flex-1 flex flex-col overflow-hidden" style={{ minWidth: 0, width: 'calc(100vw - 16rem)' }}>
-        <TopBar />
-        <main className="flex-1 overflow-auto w-full" style={{ display: 'flex', flexDirection: 'column' }}>
+    <div className="banner banner-warning" role="status" aria-live="polite">
+      {reconnecting ? <Loader2 size={14} className="animate-spin flex-shrink-0" /> : <WifiOff size={14} className="flex-shrink-0" />}
+      <span className="flex-1">
+        {reconnecting ? 'Reconnecting to server…' : 'Connecting to server…'}
+        {reconnectAttempt > 1 && <span className="opacity-75"> (attempt {reconnectAttempt})</span>}
+      </span>
+      <button onClick={reconnectNow} className="text-xs font-medium underline underline-offset-2 hover:opacity-80 focus-ring rounded">
+        Retry now
+      </button>
+    </div>
+  )
+}
+
+function AppLayout() {
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const location = useLocation()
+
+  // Close the drawer on navigation (mobile)
+  useEffect(() => {
+    setSidebarOpen(false)
+  }, [location.pathname])
+
+  // Escape closes the drawer
+  useEffect(() => {
+    if (!sidebarOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSidebarOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [sidebarOpen])
+
+  return (
+    <div className="app-shell">
+      {sidebarOpen && <div className="app-sidebar-backdrop lg:hidden" onClick={() => setSidebarOpen(false)} aria-hidden />}
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <div className="app-main">
+        <TopBar onToggleSidebar={() => setSidebarOpen((o) => !o)} />
+        <ConnectionBanner />
+        <main className="app-content" id="main-content">
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/array" element={<ArrayPage />} />
@@ -47,55 +88,57 @@ function AppLayout() {
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>('booting')
-  const [, setToken] = useState<string | null>(null)
 
   // Check for existing session on mount
   useEffect(() => {
     const savedToken = localStorage.getItem('auth-token')
     if (savedToken) {
-      setToken(savedToken)
       api.defaults.headers.common['Authorization'] = `Bearer ${savedToken}`
     }
   }, [])
 
   const handleBootComplete = () => {
-    // After boot, check if we have a valid token
     const savedToken = localStorage.getItem('auth-token')
-    if (savedToken) {
-      setToken(savedToken)
-      setAppState('authenticated')
-    } else {
-      setAppState('login')
-    }
+    setAppState(savedToken ? 'authenticated' : 'login')
   }
 
-  const handleLogin = async (username: string, password: string) => {
+  /**
+   * Returns the login payload so the LoginPage can show a
+   * "default credentials in use" banner when `mustChangePassword` is set.
+   * Call `proceed()` to enter the app.
+   */
+  const handleLogin = useCallback(async (username: string, password: string): Promise<LoginResult> => {
     try {
       const response = await api.post('/auth/login', { username, password })
       const newToken = response.data.token
-      setToken(newToken)
       localStorage.setItem('auth-token', newToken)
-      // Set token on api instance
       api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
-      setAppState('authenticated')
+      return {
+        mustChangePassword: !!response.data.mustChangePassword,
+        proceed: () => setAppState('authenticated'),
+      }
     } catch (err: any) {
-      throw new Error(err?.response?.data?.message || 'Authentication failed')
+      throw new Error(err?.response?.data?.message || err?.response?.data?.error || 'Authentication failed')
     }
-  }
+  }, [])
 
   return (
     <ThemeProvider>
-      {appState === 'booting' && <BootScreen onBootComplete={handleBootComplete} />}
+      <ToastProvider>
+        {appState === 'booting' && <BootScreen onBootComplete={handleBootComplete} />}
 
-      {appState === 'login' && <LoginPage onLogin={handleLogin} />}
+        {appState === 'login' && <LoginPage onLogin={handleLogin} />}
 
-      {appState === 'authenticated' && (
-        <WebSocketProvider>
-          <Router>
-            <AppLayout />
-          </Router>
-        </WebSocketProvider>
-      )}
+        {appState === 'authenticated' && (
+          <WebSocketProvider>
+            <ConfirmProvider>
+              <Router>
+                <AppLayout />
+              </Router>
+            </ConfirmProvider>
+          </WebSocketProvider>
+        )}
+      </ToastProvider>
     </ThemeProvider>
   )
 }

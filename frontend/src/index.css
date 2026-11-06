@@ -9,7 +9,9 @@
   --color-surface: #2e3240;
   --color-border: #363a48;
   --color-text-primary: #e2e4e9;
-  --color-text-secondary: #8b8fa3;
+  /* 5.1:1 on --color-surface, 5.9:1 on --color-bg-secondary (WCAG AA) */
+  --color-text-secondary: #9ea3b8;
+  --color-text-muted: #7d8296;
   --color-accent: #2ab5b2;
   --color-accent-dark: #229e9b;
   --color-accent-light: #3ec9c6;
@@ -17,6 +19,13 @@
   --color-warning: #ffa502;
   --color-error: #ff3860;
   --color-info: #3273dc;
+  --color-info-light: #6ea0ff;
+
+  --sidebar-width: 16rem;
+  --topbar-height: 3rem;
+  --font-mono: "JetBrainsMono Nerd Font", "JetBrains Mono", "FiraCode Nerd Font", "Fira Code",
+    "Cascadia Code", "SF Mono", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono",
+    "Courier New", monospace;
 }
 
 * {
@@ -32,7 +41,6 @@ html, body {
 
 html {
   font-size: 14px;
-  scroll-behavior: smooth;
 }
 
 body {
@@ -43,7 +51,7 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 #root {
@@ -52,22 +60,112 @@ body {
   display: flex;
 }
 
-/* Force React Router wrapper to fill full width and height */
-main > * {
-  width: 100%;
-  min-width: 0;
-  flex: 1;
-  display: contents;
+code, kbd, pre, .font-mono {
+  font-family: var(--font-mono);
 }
 
-/* Custom Scrollbar */
+kbd {
+  display: inline-block;
+  padding: 0 0.35rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--color-border);
+  border-bottom-width: 2px;
+  background: var(--color-bg-primary);
+  font-size: 0.7rem;
+  line-height: 1.25rem;
+  color: var(--color-text-secondary);
+}
+
+/* ─── Focus rings (keyboard only) ─────────────────────────────────────── */
+
+:focus {
+  outline: none;
+}
+
+:focus-visible,
+.focus-ring:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
+/* ─── App shell ────────────────────────────────────────────────────────── */
+
+.app-shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  width: 100vw;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+}
+
+.app-sidebar {
+  width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-secondary);
+  border-right: 1px solid var(--color-border);
+  transition: transform 0.2s ease;
+  z-index: 40;
+}
+
+.app-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: var(--topbar-height);
+  flex: 0 0 var(--topbar-height);
+}
+
+.app-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+/* Below 1024px the sidebar becomes an off-canvas drawer */
+@media (max-width: 1023.98px) {
+  .app-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    transform: translateX(-100%);
+    box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0);
+  }
+  .app-sidebar.open {
+    transform: translateX(0);
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+  }
+  .app-sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 39;
+  }
+}
+
+/* ─── Scrollbars ───────────────────────────────────────────────────────── */
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-bg-secondary);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
@@ -80,13 +178,13 @@ main > * {
   background: var(--color-border);
 }
 
-/* Firefox Scrollbar */
 * {
-  scrollbar-color: var(--color-surface) var(--color-bg-secondary);
+  scrollbar-color: var(--color-surface) transparent;
   scrollbar-width: thin;
 }
 
-/* Utility Classes */
+/* ─── Utility Classes ──────────────────────────────────────────────────── */
+
 .glass {
   background: rgba(42, 42, 42, 0.8);
   backdrop-filter: blur(10px);
@@ -136,12 +234,8 @@ main > * {
 
 .badge-info {
   background-color: rgba(50, 115, 220, 0.1);
-  color: var(--color-info);
+  color: var(--color-info-light);
   border: 1px solid rgba(50, 115, 220, 0.3);
-}
-
-.transition-all {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .hover-lift:hover {
@@ -154,12 +248,8 @@ main > * {
 }
 
 @keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .animated-spin {
@@ -167,15 +257,72 @@ main > * {
 }
 
 @keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Skeleton shimmer */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  background-size: 400px 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Global status banner (reconnecting, array error, etc.) */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  border-bottom: 1px solid transparent;
+}
+.banner-warning {
+  background: rgba(255, 165, 2, 0.12);
+  border-color: rgba(255, 165, 2, 0.35);
+  color: #ffc247;
+}
+.banner-error {
+  background: rgba(255, 56, 96, 0.12);
+  border-color: rgba(255, 56, 96, 0.35);
+  color: #ff6b8a;
+}
+.banner-info {
+  background: rgba(42, 181, 178, 0.12);
+  border-color: rgba(42, 181, 178, 0.35);
+  color: var(--color-accent-light);
+}
+
+/* Responsive dashboard grid */
+.widget-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+.widget-grid > .span-2 {
+  grid-column: span 2;
+}
+@media (max-width: 720px) {
+  .widget-grid > .span-2 {
+    grid-column: span 1;
   }
 }
 
-/* Modal and Dialog Styles */
+/* ─── Modal and Dialog Styles ─────────────────────────────────────────── */
+
 .modal-backdrop {
   position: fixed;
   top: 0;
@@ -191,12 +338,8 @@ main > * {
 }
 
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .modal-content {
@@ -219,11 +362,13 @@ main > * {
   }
 }
 
-/* Input and Form Styles */
+/* ─── Input and Form Styles ───────────────────────────────────────────── */
+
 input[type="text"],
 input[type="email"],
 input[type="password"],
 input[type="number"],
+input[type="search"],
 textarea,
 select {
   background-color: var(--color-surface);
@@ -231,18 +376,24 @@ select {
   border: 1px solid var(--color-border);
   padding: 0.5rem 0.75rem;
   border-radius: 0.375rem;
-  transition: all 0.2s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 input[type="text"]:focus,
 input[type="email"]:focus,
 input[type="password"]:focus,
 input[type="number"]:focus,
+input[type="search"]:focus,
 textarea:focus,
 select:focus {
   outline: none;
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px rgba(42, 181, 178, 0.15);
+  box-shadow: 0 0 0 3px rgba(42, 181, 178, 0.2);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-text-muted);
 }
 
 input[type="checkbox"],
@@ -250,10 +401,11 @@ input[type="radio"] {
   accent-color: var(--color-accent);
 }
 
-/* Button Styles */
+/* ─── Button Styles ───────────────────────────────────────────────────── */
+
 button {
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.15s;
 }
 
 button:disabled {
@@ -261,22 +413,42 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* xterm.js styles */
-.xterm {
-  background-color: var(--color-bg-secondary) !important;
-  color: var(--color-text-primary) !important;
-  padding: 0.5rem !important;
+/* ─── xterm.js ────────────────────────────────────────────────────────── */
+
+.terminal-host {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  background: var(--color-bg-darker);
 }
 
-.xterm-screen {
-  background-color: var(--color-bg-secondary) !important;
+.terminal-host .xterm {
+  height: 100%;
+  padding: 0.5rem 0 0.25rem 0.5rem;
 }
 
-.xterm .xterm-cursor {
-  background-color: var(--color-accent) !important;
+.terminal-host .xterm-viewport {
+  /* let our own scrollbar styling apply */
+  scrollbar-width: thin;
 }
 
-.xterm .xterm-selection,
-.xterm .xterm-selection div {
-  background-color: rgba(42, 181, 178, 0.2) !important;
+.terminal-host .xterm .xterm-screen {
+  /* xterm sets these itself; keep layout stable */
+  margin: 0;
+}
+
+.terminal-host:fullscreen {
+  background: var(--color-bg-darker);
+}
+
+.terminal-pane[hidden] {
+  display: none;
+}
+
+/* Reduce motion for users who ask for it */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
 }

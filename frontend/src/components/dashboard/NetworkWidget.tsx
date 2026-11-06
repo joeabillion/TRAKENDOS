@@ -1,21 +1,25 @@
 import React from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
 import { formatSpeed } from '../../utils/formatters'
+import { SkeletonCard } from '../common/Skeleton'
+import { EmptyState } from '../common/EmptyState'
 
 export const NetworkWidget: React.FC = () => {
   const stats = useSystemStats()
 
-  if (!stats || !stats.network || stats.network.length === 0) {
+  if (!stats) return <SkeletonCard title="Network" tiles={2} bodyHeight={80} className="h-full" />
+  if (!stats.network || stats.network.length === 0) {
     return (
-      <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
-        <div className="text-sm text-trakend-text-secondary">No network interfaces</div>
+      <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4 h-full">
+        <h3 className="text-base font-semibold text-trakend-text-primary mb-3">Network</h3>
+        <EmptyState compact title="No network interfaces" />
       </div>
     )
   }
 
   return (
-    <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
-      <h3 className="text-lg font-semibold text-trakend-text-primary mb-3">
+    <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4 h-full overflow-auto">
+      <h3 className="text-base font-semibold text-trakend-text-primary mb-3">
         Network <span className="text-sm font-normal text-trakend-text-secondary">({stats.network.length} interfaces)</span>
       </h3>
 

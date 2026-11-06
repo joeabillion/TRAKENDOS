@@ -1,26 +1,21 @@
 import React from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
+import { SkeletonCard } from '../common/Skeleton'
 
 export const CpuWidget: React.FC = () => {
   const stats = useSystemStats()
 
-  if (!stats) {
-    return (
-      <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
-        <div className="text-sm text-trakend-text-secondary">Loading CPU data...</div>
-      </div>
-    )
-  }
+  if (!stats) return <SkeletonCard title="CPU" tiles={3} bodyHeight={110} className="h-full" />
 
   const cores = stats.cpu.cores
   const threads = stats.cpu.threads
   const hasHT = threads > cores
 
   return (
-    <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-trakend-text-primary">CPU</h3>
-        <span className="text-xs text-trakend-text-secondary font-mono">{stats.cpu.model}</span>
+    <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4 h-full">
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <h3 className="text-base font-semibold text-trakend-text-primary">CPU</h3>
+        <span className="text-xs text-trakend-text-secondary font-mono truncate" title={stats.cpu.model}>{stats.cpu.model}</span>
       </div>
 
       {/* Overall Stats */}
@@ -47,7 +42,7 @@ export const CpuWidget: React.FC = () => {
       <div className="text-xs text-trakend-text-secondary uppercase tracking-wide mb-2">
         {cores} Cores / {threads} Threads {hasHT && '(Hyper-Threaded)'}
       </div>
-      <div className="grid grid-cols-8 gap-1">
+      <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(28px, 1fr))` }}>
         {stats.cpu.perCoreUsage.map((usage, i) => {
           const coreNum = hasHT ? Math.floor(i / 2) : i
           const isHT = hasHT && i % 2 === 1

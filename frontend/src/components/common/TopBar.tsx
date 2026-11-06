@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { Bell, AlertTriangle, Info, CheckCircle, XCircle, X } from 'lucide-react'
+import { Bell, AlertTriangle, Info, CheckCircle, XCircle, X, Menu, Server, Clock, Globe } from 'lucide-react'
+import clsx from 'clsx'
 import { useWebSocket } from '../../context/WebSocketContext'
 import { formatBytes, formatUptime } from '../../utils/formatters'
+import { Badge } from './Badge'
 
 interface SystemAlert {
   id: string
@@ -12,8 +14,20 @@ interface SystemAlert {
   read: boolean
 }
 
-export const TopBar: React.FC = () => {
-  const { systemStats, connected } = useWebSocket()
+interface TopBarProps {
+  onToggleSidebar?: () => void
+}
+
+/** First non-loopback IPv4 reported by the stats stream. */
+function primaryIp(stats: { network?: Array<{ name: string; ip: string }> } | null): string | null {
+  if (!stats?.network) return null
+  const nic = stats.network.find((n) => n.ip && n.name !== 'lo' && !n.ip.startsWith('127.') && !n.name.startsWith('docker') && !n.name.startsWith('br-') && !n.name.startsWith('veth'))
+    || stats.network.find((n) => n.ip && n.name !== 'lo')
+  return nic?.ip || null
+}
+
+export const TopBar: React.FC<TopBarProps> = ({ onToggleSidebar }) => {
+  const { systemStats, connected, reconnecting } = useWebSocket()
   const [alerts, setAlerts] = useState<SystemAlert[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -92,57 +106,77 @@ export const TopBar: React.FC = () => {
     }
   }
 
+  const ip = primaryIp(systemStats)
+
   return (
-    <div className="h-12 bg-trakend-surface border-b border-trakend-border flex items-center justify-between px-6">
-      {/* Left: System Info */}
-      <div className="flex items-center gap-6">
-        {systemStats && (
+    <header className="app-topbar bg-trakend-surface border-b border-trakend-border flex items-center justify-between gap-3 px-3 sm:px-4">
+      {/* Left: hamburger + System Info */}
+      <div className="flex items-center gap-3 sm:gap-5 min-w-0">
+        {onToggleSidebar && (
+          <button
+            onClick={onToggleSidebar}
+            aria-label="Toggle navigation"
+            className="lg:hidden p-1.5 -ml-1 rounded text-trakend-text-secondary hover:text-trakend-text-primary hover:bg-trakend-surface-light focus-ring"
+          >
+            <Menu size={18} />
+          </button>
+        )}
+
+        {systemStats ? (
           <>
-            <div>
-              <span className="text-xs text-trakend-text-secondary uppercase tracking-wide mr-2">Host</span>
-              <span className="text-sm font-semibold text-trakend-text-primary">{systemStats.hostname}</span>
+            <div className="flex items-center gap-1.5 min-w-0" title="Hostname">
+              <Server size={13} className="text-trakend-accent flex-shrink-0" />
+              <span className="text-sm font-semibold text-trakend-text-primary truncate">{systemStats.hostname}</span>
             </div>
 
-            <div className="h-6 w-px bg-trakend-border"></div>
+            {ip && (
+              <div className="hidden sm:flex items-center gap-1.5" title="Primary IP address">
+                <Globe size={13} className="text-trakend-text-secondary flex-shrink-0" />
+                <span className="text-xs font-mono text-trakend-text-secondary">{ip}</span>
+              </div>
+            )}
 
-            <div>
-              <span className="text-xs text-trakend-text-secondary uppercase tracking-wide mr-2">Uptime</span>
-              <span className="text-sm font-semibold text-trakend-text-primary">
-                {formatUptime(systemStats.uptime)}
-              </span>
+            <div className="hidden md:flex items-center gap-1.5" title="Uptime">
+              <Clock size={13} className="text-trakend-text-secondary flex-shrink-0" />
+              <span className="text-xs text-trakend-text-secondary">up {formatUptime(systemStats.uptime)}</span>
             </div>
 
-            <div className="h-6 w-px bg-trakend-border"></div>
-
-            <div>
-              <span className="text-xs text-trakend-text-secondary uppercase tracking-wide mr-2">RAM</span>
-              <span className="text-sm font-semibold text-trakend-text-primary">
-                {formatBytes(systemStats.memory.used)} / {formatBytes(systemStats.memory.total)}
-              </span>
-            </div>
-
-            <div className="h-6 w-px bg-trakend-border"></div>
-
-            <div>
-              <span className="text-xs text-trakend-text-secondary uppercase tracking-wide mr-2">Containers</span>
-              <span className="text-sm font-semibold text-trakend-success">{systemStats.docker.running}</span>
-              <span className="text-sm text-trakend-text-secondary">/{systemStats.docker.total}</span>
+            <div className="hidden xl:flex items-center gap-4 pl-4 border-l border-trakend-border">
+              <div>
+                <span className="text-[10px] text-trakend-text-secondary uppercase tracking-wide mr-2">RAM</span>
+                <span className="text-xs font-semibold text-trakend-text-primary">
+                  {formatBytes(systemStats.memory.used)} / {formatBytes(systemStats.memory.total)}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-trakend-text-secondary uppercase tracking-wide mr-2">Containers</span>
+                <span className="text-xs font-semibold text-trakend-success">{systemStats.docker.running}</span>
+                <span className="text-xs text-trakend-text-secondary">/{systemStats.docker.total}</span>
+              </div>
             </div>
           </>
+        ) : (
+          <div className="flex items-center gap-3">
+            <div className="skeleton h-3.5 w-28 rounded" />
+            <div className="skeleton h-3 w-20 rounded hidden sm:block" />
+          </div>
         )}
       </div>
 
       {/* Right: Bell + Connection */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 flex-shrink-0">
         {/* Notifications Bell */}
         <div className="relative" ref={dropdownRef}>
           <button
             onClick={() => { setShowDropdown(!showDropdown); if (!showDropdown) markAllRead() }}
-            className="relative flex items-center justify-center w-8 h-8 rounded-lg hover:bg-trakend-surface-light transition-colors text-trakend-text-secondary hover:text-trakend-text-primary"
+            aria-label={`Notifications${unreadCount ? ` (${unreadCount} unread)` : ''}`}
+            aria-haspopup="menu"
+            aria-expanded={showDropdown}
+            className="relative flex items-center justify-center w-8 h-8 rounded-lg hover:bg-trakend-surface-light transition-colors text-trakend-text-secondary hover:text-trakend-text-primary focus-ring"
           >
             <Bell size={16} />
             {unreadCount > 0 && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 bg-trakend-error rounded-full text-white text-[10px] flex items-center justify-center font-bold">
+              <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-trakend-error rounded-full text-white text-[10px] flex items-center justify-center font-bold">
                 {Math.min(unreadCount, 9)}
               </span>
             )}
@@ -150,7 +184,7 @@ export const TopBar: React.FC = () => {
 
           {/* Dropdown */}
           {showDropdown && (
-            <div className="absolute right-0 top-10 w-80 bg-trakend-surface border border-trakend-border rounded-lg shadow-2xl z-50 overflow-hidden">
+            <div className="absolute right-0 top-10 w-80 bg-trakend-surface border border-trakend-border rounded-lg shadow-2xl z-50 overflow-hidden" role="menu">
               <div className="px-4 py-3 border-b border-trakend-border flex items-center justify-between">
                 <span className="text-sm font-semibold text-trakend-text-primary">Notifications</span>
                 <span className="text-xs text-trakend-text-secondary">{alerts.length} alert{alerts.length !== 1 ? 's' : ''}</span>
@@ -168,7 +202,7 @@ export const TopBar: React.FC = () => {
                         <div className="text-xs font-semibold text-trakend-text-primary">{alert.title}</div>
                         <div className="text-xs text-trakend-text-secondary">{alert.message}</div>
                       </div>
-                      <button onClick={() => dismissAlert(alert.id)} className="p-0.5 hover:bg-trakend-dark rounded text-trakend-text-secondary">
+                      <button onClick={() => dismissAlert(alert.id)} aria-label="Dismiss" className="p-0.5 hover:bg-trakend-dark rounded text-trakend-text-secondary focus-ring">
                         <X size={12} />
                       </button>
                     </div>
@@ -180,13 +214,18 @@ export const TopBar: React.FC = () => {
         </div>
 
         {/* Connection Status */}
-        <div className="flex items-center gap-2 px-2 py-1 rounded bg-trakend-surface-light">
-          <div
-            className={`w-2 h-2 rounded-full ${connected ? 'bg-trakend-success animate-pulse' : 'bg-trakend-error'}`}
-          ></div>
-          <span className="text-xs text-trakend-text-secondary">{connected ? 'Connected' : 'Disconnected'}</span>
-        </div>
+        <Badge
+          tone={connected ? 'success' : reconnecting ? 'warning' : 'error'}
+          dot
+          pulse={connected}
+          size="xs"
+          className={clsx('font-medium')}
+          title={connected ? 'Live connection to the server' : reconnecting ? 'Connection lost — retrying' : 'Not connected'}
+        >
+          <span className="hidden sm:inline">{connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Offline'}</span>
+          {systemStats?.hostname && <span className="hidden lg:inline opacity-70">· {systemStats.hostname}</span>}
+        </Badge>
       </div>
-    </div>
+    </header>
   )
 }

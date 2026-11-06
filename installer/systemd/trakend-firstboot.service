@@ -1,0 +1,16 @@
+# Trakend OS first-boot hardening (runs once, then writes /data/.firstboot-done).
+# SOURCE OF TRUTH: installer/systemd/trakend-firstboot.service in the Trakend OS repo.
+[Unit]
+Description=Trakend OS First Boot Setup
+ConditionPathExists=!/data/.firstboot-done
+RequiresMountsFor=/data
+After=local-fs.target
+Before=trakend-os.service ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/trakend/scripts/firstboot.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

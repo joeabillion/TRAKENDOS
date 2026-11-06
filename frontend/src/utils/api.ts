@@ -34,7 +34,9 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       // Clear auth and redirect to login
       localStorage.removeItem('auth-token')
-      window.location.href = '/login'
+      // No /login route exists — App shows LoginPage whenever the token is absent
+      if (window.location.pathname !== '/') window.location.href = '/'
+      else window.location.reload()
     }
     return Promise.reject(error)
   }

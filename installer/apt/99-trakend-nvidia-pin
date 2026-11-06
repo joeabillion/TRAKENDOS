@@ -1,0 +1,18 @@
+# Trakend OS: pin the NVIDIA driver to the 580 branch (Tesla P40 / Pascal).
+# Installed to /etc/apt/preferences.d/99-trakend-nvidia-pin
+#
+# Priority 1001 = always prefer/keep 580.* even if it means a downgrade.
+# Priority -1   = never install 59x / 6xx branches, even if explicitly requested
+#                 without --allow-downgrades / pin override.
+
+Package: nvidia-* libnvidia-* xserver-xorg-video-nvidia-*
+Pin: version 580.*
+Pin-Priority: 1001
+
+Package: nvidia-* libnvidia-* xserver-xorg-video-nvidia-*
+Pin: version 59*
+Pin-Priority: -1
+
+Package: nvidia-* libnvidia-* xserver-xorg-video-nvidia-*
+Pin: version 6*
+Pin-Priority: -1

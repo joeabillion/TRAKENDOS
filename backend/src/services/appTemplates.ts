@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// Default host paths for templates. Change these two prefixes to relocate
+// where app configs and media live on the array.
+// ---------------------------------------------------------------------------
+export const APPDATA_ROOT = '/mnt/disks/cache/appdata';
+export const DISK_ROOT = '/mnt/disks/disk1';
+export const MEDIA_ROOT = `${DISK_ROOT}/media`;
+export const DOWNLOADS_ROOT = `${DISK_ROOT}/downloads`;
+
 export interface EnvVariable {
   name: string;
   default: string;
@@ -37,6 +46,8 @@ export interface AppTemplate {
   privileged?: boolean;
   capabilities?: string[];
   resourceLimits?: ResourceLimits;
+  /** Request NVIDIA GPU passthrough by default when deploying this template */
+  gpu?: boolean;
   setupNotes: string;
 }
 
@@ -60,14 +71,15 @@ export class AppTemplatesService {
         { name: 'VERSION', default: 'latest', description: 'Version to install' },
       ],
       volumes: [
-        { containerPath: '/config', hostPath: '/mnt/trakend/plex/config' },
-        { containerPath: '/tv', hostPath: '/mnt/trakend/media/tv' },
-        { containerPath: '/movies', hostPath: '/mnt/trakend/media/movies' },
+        { containerPath: '/config', hostPath: `${APPDATA_ROOT}/plex/config` },
+        { containerPath: '/tv', hostPath: `${MEDIA_ROOT}/tv` },
+        { containerPath: '/movies', hostPath: `${MEDIA_ROOT}/movies` },
       ],
       resourceLimits: {
         cpuReservation: '2',
         memoryReservation: '2GB',
       },
+      gpu: true,
       setupNotes: 'Visit http://localhost:32400/web to configure. Claim your server with a Plex account.',
     },
 
@@ -87,12 +99,13 @@ export class AppTemplatesService {
         { name: 'PGID', default: '1000', description: 'Group ID' },
       ],
       volumes: [
-        { containerPath: '/config', hostPath: '/mnt/trakend/jellyfin/config' },
-        { containerPath: '/media', hostPath: '/mnt/trakend/media' },
+        { containerPath: '/config', hostPath: `${APPDATA_ROOT}/jellyfin/config` },
+        { containerPath: '/media', hostPath: MEDIA_ROOT },
       ],
       resourceLimits: {
         memoryReservation: '1.5GB',
       },
+      gpu: true,
       setupNotes: 'Access Jellyfin at http://localhost:8096 and configure your media libraries.',
     },
 
@@ -112,9 +125,9 @@ export class AppTemplatesService {
         { name: 'PGID', default: '1000', description: 'Group ID' },
       ],
       volumes: [
-        { containerPath: '/config', hostPath: '/mnt/trakend/sonarr/config' },
-        { containerPath: '/tv', hostPath: '/mnt/trakend/media/tv' },
-        { containerPath: '/downloads', hostPath: '/mnt/trakend/downloads' },
+        { containerPath: '/config', hostPath: `${APPDATA_ROOT}/sonarr/config` },
+        { containerPath: '/tv', hostPath: `${MEDIA_ROOT}/tv` },
+        { containerPath: '/downloads', hostPath: DOWNLOADS_ROOT },
       ],
       setupNotes: 'Access Sonarr at http://localhost:8989 and configure download clients.',
     },
@@ -135,9 +148,9 @@ export class AppTemplatesService {
         { name: 'PGID', default: '1000', description: 'Group ID' },
       ],
       volumes: [
-        { containerPath: '/config', hostPath: '/mnt/trakend/radarr/config' },
-        { containerPath: '/movies', hostPath: '/mnt/trakend/media/movies' },
-        { containerPath: '/downloads', hostPath: '/mnt/trakend/downloads' },
+        { containerPath: '/config', hostPath: `${APPDATA_ROOT}/radarr/config` },
+        { containerPath: '/movies', hostPath: `${MEDIA_ROOT}/movies` },
+        { containerPath: '/downloads', hostPath: DOWNLOADS_ROOT },
       ],
       setupNotes: 'Access Radarr at http://localhost:7878 and set up movie management.',
     },
@@ -160,8 +173,8 @@ export class AppTemplatesService {
         { name: 'PGID', default: '1000', description: 'Group ID' },
       ],
       volumes: [
-        { containerPath: '/config', hostPath: '/mnt/trakend/qbittorrent/config' },
-        { containerPath: '/downloads', hostPath: '/mnt/trakend/downloads' },
+        { containerPath: '/config', hostPath: `${APPDATA_ROOT}/qbittorrent/config` },
+        { containerPath: '/downloads', hostPath: DOWNLOADS_ROOT },
       ],
       setupNotes: 'Access qBittorrent at http://localhost:8080. Default login: admin/adminadmin',
     },
@@ -181,7 +194,7 @@ export class AppTemplatesService {
         { name: 'LOG_LEVEL', default: 'info', description: 'Logging level' },
       ],
       volumes: [
-        { containerPath: '/app/config', hostPath: '/mnt/trakend/overseerr/config' },
+        { containerPath: '/app/config', hostPath: `${APPDATA_ROOT}/overseerr/config` },
       ],
       setupNotes: 'Access Overseerr at http://localhost:5055 and connect to your Plex/Jellyfin server.',
     },
@@ -203,8 +216,8 @@ export class AppTemplatesService {
         { name: 'NEXTCLOUD_ADMIN_PASSWORD', default: 'admin123', description: 'Admin password' },
       ],
       volumes: [
-        { containerPath: '/var/www/html', hostPath: '/mnt/trakend/nextcloud/html' },
-        { containerPath: '/var/www/html/data', hostPath: '/mnt/trakend/nextcloud/data' },
+        { containerPath: '/var/www/html', hostPath: `${APPDATA_ROOT}/nextcloud/html` },
+        { containerPath: '/var/www/html/data', hostPath: `${APPDATA_ROOT}/nextcloud/data` },
       ],
       resourceLimits: {
         memoryReservation: '1GB',
@@ -229,7 +242,7 @@ export class AppTemplatesService {
         { name: 'USER_GID', default: '1000', description: 'Group ID' },
       ],
       volumes: [
-        { containerPath: '/data', hostPath: '/mnt/trakend/gitea/data' },
+        { containerPath: '/data', hostPath: `${APPDATA_ROOT}/gitea/data` },
       ],
       setupNotes: 'Access Gitea at http://localhost:3000 to set up your Git server.',
     },
@@ -250,7 +263,7 @@ export class AppTemplatesService {
         { name: 'SIGNUPS_ALLOWED', default: 'true', description: 'Allow new user signups' },
       ],
       volumes: [
-        { containerPath: '/data', hostPath: '/mnt/trakend/vaultwarden/data' },
+        { containerPath: '/data', hostPath: `${APPDATA_ROOT}/vaultwarden/data` },
       ],
       setupNotes: 'Access Vaultwarden at http://localhost:8000. Install Bitwarden client extensions.',
     },
@@ -274,8 +287,8 @@ export class AppTemplatesService {
         { name: 'TZ', default: 'UTC', description: 'Timezone' },
       ],
       volumes: [
-        { containerPath: '/etc/pihole', hostPath: '/mnt/trakend/pihole/etc' },
-        { containerPath: '/etc/dnsmasq.d', hostPath: '/mnt/trakend/pihole/dnsmasq' },
+        { containerPath: '/etc/pihole', hostPath: `${APPDATA_ROOT}/pihole/etc` },
+        { containerPath: '/etc/dnsmasq.d', hostPath: `${APPDATA_ROOT}/pihole/dnsmasq` },
       ],
       setupNotes: 'Access Pi-hole at http://localhost:8081/admin. Set your router DNS to this server.',
     },
@@ -295,8 +308,8 @@ export class AppTemplatesService {
       ],
       environment: [],
       volumes: [
-        { containerPath: '/data', hostPath: '/mnt/trakend/npm/data' },
-        { containerPath: '/etc/letsencrypt', hostPath: '/mnt/trakend/npm/letsencrypt' },
+        { containerPath: '/data', hostPath: `${APPDATA_ROOT}/npm/data` },
+        { containerPath: '/etc/letsencrypt', hostPath: `${APPDATA_ROOT}/npm/letsencrypt` },
       ],
       setupNotes: 'Access NPM at http://localhost:81. Default: admin@example.com / changeme',
     },
@@ -317,7 +330,7 @@ export class AppTemplatesService {
         { name: 'PGID', default: '1000', description: 'Group ID' },
       ],
       volumes: [
-        { containerPath: '/config', hostPath: '/mnt/trakend/wireguard/config' },
+        { containerPath: '/config', hostPath: `${APPDATA_ROOT}/wireguard/config` },
       ],
       privileged: true,
       setupNotes: 'WireGuard configuration files in /config. Use wg-easy for UI.',
@@ -338,7 +351,7 @@ export class AppTemplatesService {
       ],
       environment: [],
       volumes: [
-        { containerPath: '/etc/traefik', hostPath: '/mnt/trakend/traefik/config' },
+        { containerPath: '/etc/traefik', hostPath: `${APPDATA_ROOT}/traefik/config` },
       ],
       setupNotes: 'Access Traefik dashboard at http://localhost:8082. Configure providers.',
     },
@@ -359,7 +372,7 @@ export class AppTemplatesService {
         { name: 'GF_SECURITY_ADMIN_PASSWORD', default: 'admin', description: 'Admin password' },
       ],
       volumes: [
-        { containerPath: '/var/lib/grafana', hostPath: '/mnt/trakend/grafana/lib' },
+        { containerPath: '/var/lib/grafana', hostPath: `${APPDATA_ROOT}/grafana/lib` },
       ],
       setupNotes: 'Access Grafana at http://localhost:3100. Default: admin/admin',
     },
@@ -377,8 +390,8 @@ export class AppTemplatesService {
       ],
       environment: [],
       volumes: [
-        { containerPath: '/etc/prometheus', hostPath: '/mnt/trakend/prometheus/config' },
-        { containerPath: '/prometheus', hostPath: '/mnt/trakend/prometheus/data' },
+        { containerPath: '/etc/prometheus', hostPath: `${APPDATA_ROOT}/prometheus/config` },
+        { containerPath: '/prometheus', hostPath: `${APPDATA_ROOT}/prometheus/data` },
       ],
       setupNotes: 'Access Prometheus at http://localhost:9090. Configure prometheus.yml.',
     },
@@ -396,7 +409,7 @@ export class AppTemplatesService {
       ],
       environment: [],
       volumes: [
-        { containerPath: '/app/data', hostPath: '/mnt/trakend/uptime-kuma/data' },
+        { containerPath: '/app/data', hostPath: `${APPDATA_ROOT}/uptime-kuma/data` },
       ],
       setupNotes: 'Access Uptime Kuma at http://localhost:3001 and set up monitoring.',
     },
@@ -415,7 +428,7 @@ export class AppTemplatesService {
       ],
       environment: [],
       volumes: [
-        { containerPath: '/data', hostPath: '/mnt/trakend/portainer/data' },
+        { containerPath: '/data', hostPath: `${APPDATA_ROOT}/portainer/data` },
       ],
       setupNotes: 'Access Portainer at http://localhost:9000. Set up admin account.',
     },
@@ -436,7 +449,7 @@ export class AppTemplatesService {
         { name: 'TZ', default: 'UTC', description: 'Timezone' },
       ],
       volumes: [
-        { containerPath: '/config', hostPath: '/mnt/trakend/homeassistant/config' },
+        { containerPath: '/config', hostPath: `${APPDATA_ROOT}/homeassistant/config` },
       ],
       privileged: true,
       setupNotes: 'Access Home Assistant at http://localhost:8123. Create account on first login.',
@@ -455,7 +468,7 @@ export class AppTemplatesService {
       ],
       environment: [],
       volumes: [
-        { containerPath: '/data', hostPath: '/mnt/trakend/nodered/data' },
+        { containerPath: '/data', hostPath: `${APPDATA_ROOT}/nodered/data` },
       ],
       setupNotes: 'Access Node-RED at http://localhost:1880. Create flows for automation.',
     },
@@ -476,7 +489,7 @@ export class AppTemplatesService {
         { name: 'PASSWORD', default: 'changeme', description: 'Web UI password' },
       ],
       volumes: [
-        { containerPath: '/home/coder/project', hostPath: '/mnt/trakend/code-server/project' },
+        { containerPath: '/home/coder/project', hostPath: `${APPDATA_ROOT}/code-server/project` },
       ],
       setupNotes: 'Access Code Server at https://localhost:8443. Change default password.',
     },
@@ -497,9 +510,33 @@ export class AppTemplatesService {
         { name: 'POSTGRES_USER', default: 'postgres', description: 'Root user' },
       ],
       volumes: [
-        { containerPath: '/var/lib/postgresql/data', hostPath: '/mnt/trakend/postgresql/data' },
+        { containerPath: '/var/lib/postgresql/data', hostPath: `${APPDATA_ROOT}/postgresql/data` },
       ],
       setupNotes: 'PostgreSQL is ready at localhost:5432 with your configured credentials.',
+    },
+
+    // AI
+    {
+      id: 'ollama',
+      name: 'Ollama',
+      description: 'Run large language models locally (Llama, Mistral, Gemma, ...)',
+      category: 'AI',
+      iconUrl: 'https://ollama.com/public/icon-64x64.png',
+      dockerImage: 'ollama/ollama',
+      dockerTag: 'latest',
+      ports: [
+        { containerPort: 11434, hostPort: 11434, protocol: 'tcp' },
+      ],
+      environment: [],
+      volumes: [
+        { containerPath: '/root/.ollama', hostPath: `${APPDATA_ROOT}/ollama` },
+      ],
+      resourceLimits: {
+        cpuLimits: '8',
+        memoryLimits: '16GB',
+      },
+      gpu: true,
+      setupNotes: 'API is available at http://localhost:11434. Pull a model with `docker exec -it ollama ollama pull llama3`. GPU acceleration requires nvidia-container-toolkit on the host.',
     },
   ];
 

@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { Save } from 'lucide-react'
 import { ThemeSettings } from './ThemeSettings'
 import { SharesSettings } from './SharesSettings'
+import { UpdatesSettings } from './UpdatesSettings'
 
 type SettingsTab = 'general' | 'ssh' | 'docker' | 'shares' | 'theme' | 'maya' | 'updates'
 
@@ -292,66 +293,6 @@ const MayaSettings: React.FC = () => {
         />
         <span className="text-trakend-text-primary">Enable Notifications</span>
       </label>
-    </div>
-  )
-}
-
-const UpdatesSettings: React.FC = () => {
-  const [checkFrequency, setCheckFrequency] = useState('daily')
-  const [autoUpdate, setAutoUpdate] = useState(false)
-
-  return (
-    <div className="max-w-2xl space-y-6">
-      <div className="p-4 bg-trakend-surface border border-trakend-border rounded-lg">
-        <div className="text-sm font-semibold text-trakend-text-primary mb-1">Current Version</div>
-        <div className="text-2xl font-bold text-trakend-accent">v1.0.000</div>
-        <p className="text-xs text-trakend-text-secondary mt-2">Released: March 31, 2026</p>
-      </div>
-
-      <div>
-        <label className="block text-sm font-semibold text-trakend-text-primary mb-2">Check Frequency</label>
-        <select
-          value={checkFrequency}
-          onChange={(e) => setCheckFrequency(e.target.value)}
-          className="w-full bg-trakend-surface border border-trakend-border rounded-lg px-4 py-2 text-trakend-text-primary focus:outline-none focus:border-trakend-accent"
-        >
-          <option value="hourly">Hourly</option>
-          <option value="daily">Daily</option>
-          <option value="weekly">Weekly</option>
-          <option value="never">Never</option>
-        </select>
-      </div>
-
-      <label className="flex items-center gap-3 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={autoUpdate}
-          onChange={(e) => setAutoUpdate(e.target.checked)}
-          className="w-4 h-4"
-        />
-        <div>
-          <span className="text-trakend-text-primary">Automatically Update</span>
-          <p className="text-xs text-trakend-text-secondary">Install updates without confirmation</p>
-        </div>
-      </label>
-
-      <button className="px-6 py-2 rounded-lg bg-trakend-accent text-white hover:bg-trakend-accent-dark transition-colors">
-        Check for Updates
-      </button>
-
-      <div className="pt-4 border-t border-trakend-border">
-        <h3 className="text-sm font-semibold text-trakend-text-primary mb-3">Update History</h3>
-        <div className="space-y-2">
-          <div className="p-2 bg-trakend-surface rounded text-sm">
-            <div className="text-trakend-text-primary">v1.0.000 - Latest</div>
-            <div className="text-xs text-trakend-text-secondary">Mar 31, 2026</div>
-          </div>
-          <div className="p-2 bg-trakend-surface rounded text-sm">
-            <div className="text-trakend-text-primary">v0.9.0</div>
-            <div className="text-xs text-trakend-text-secondary">Dec 15, 2023</div>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

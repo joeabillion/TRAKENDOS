@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { MoreVertical, Play, Pause, RotateCw, Trash2, Terminal, Settings } from 'lucide-react'
+import { MoreVertical, Play, Pause, RotateCw, Trash2, Terminal, Settings, Bomb } from 'lucide-react'
 import { formatPercentage } from '../../utils/formatters'
 import { Container } from '../../hooks/useDocker'
 
@@ -9,6 +9,8 @@ interface ContainerCardProps {
   onStop: (id: string) => void
   onRestart: (id: string) => void
   onRemove: (id: string) => void
+  /** Force-remove a ghost container by stopping the daemon and deleting its state directory */
+  onNuke?: (id: string) => void
   onLogs: (id: string) => void
   onShell: (id: string) => void
   onSettings: (id: string) => void
@@ -20,6 +22,7 @@ export const ContainerCard: React.FC<ContainerCardProps> = ({
   onStop,
   onRestart,
   onRemove,
+  onNuke,
   onLogs,
   onShell,
   onSettings,
@@ -112,6 +115,28 @@ export const ContainerCard: React.FC<ContainerCardProps> = ({
                 <Trash2 size={14} />
                 Remove
               </button>
+              {onNuke && (
+                <>
+                  <hr className="border-trakend-border my-1" />
+                  <div className="px-4 pt-1 text-[10px] uppercase tracking-wide text-trakend-text-secondary">Danger</div>
+                  <button
+                    onClick={() => {
+                      if (
+                        confirm(
+                          `Force remove "${container.name}"?\n\nThis stops the Docker daemon, deletes the container's state directory from disk, and restarts Docker. All other containers will be briefly interrupted. Use this only when a normal remove fails (ghost container).`
+                        )
+                      ) {
+                        onNuke(container.id)
+                      }
+                      setShowMenu(false)
+                    }}
+                    className="w-full text-left px-4 py-2 text-xs text-trakend-error hover:bg-trakend-surface-light transition-colors flex items-center gap-2"
+                  >
+                    <Bomb size={14} />
+                    Force remove (restart daemon)
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>

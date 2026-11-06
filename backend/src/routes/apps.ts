@@ -4,9 +4,24 @@ import { AuthRequest } from '../middleware/auth';
 import { DockerService } from '../services/dockerService';
 import { AppTemplatesService } from '../services/appTemplates';
 import { EventLogger } from '../services/eventLogger';
+import { requireArrayRunning, ArrayStateProvider } from './docker';
 
-export function createAppsRouter(dockerService: DockerService, appTemplates: AppTemplatesService, logger: EventLogger): Router {
+/**
+ * NOTE for index.ts wiring: pass the ArrayService as the 4th argument so template
+ * deployments are refused while the array is stopped:
+ *
+ *   createAppsRouter(dockerService, appTemplates, logger, arrayService)
+ *
+ * Omitting it keeps the previous behaviour (no gating).
+ */
+export function createAppsRouter(
+  dockerService: DockerService,
+  appTemplates: AppTemplatesService,
+  logger: EventLogger,
+  arrayService?: ArrayStateProvider
+): Router {
   const router = Router();
+  const gate = requireArrayRunning(arrayService);
 
   // Get all templates or filtered by category
   router.get('/templates', async (req: AuthRequest, res: Response) => {
@@ -44,12 +59,16 @@ export function createAppsRouter(dockerService: DockerService, appTemplates: App
   });
 
   // Deploy app from template
-  router.post('/deploy', async (req: AuthRequest, res: Response) => {
+  router.post('/deploy', gate, async (req: AuthRequest, res: Response) => {
     try {
       const { templateId, containerName, customSettings } = req.body;
 
       if (!templateId || !containerName) {
         res.status(400).json({ error: 'Template ID and container name required' });
+        return;
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(String(containerName))) {
+        res.status(400).json({ error: 'Invalid container name' });
         return;
       }
 
@@ -119,6 +138,15 @@ export function createAppsRouter(dockerService: DockerService, appTemplates: App
         createOptions.HostConfig.CapAdd = template.capabilities;
       }
 
+      // GPU passthrough: template default, overridable per deploy via customSettings.gpu
+      const gpuSetting = customSettings?.gpu;
+      const useGpu = gpuSetting === undefined ? Boolean(template.gpu) : gpuSetting === 'nvidia' || gpuSetting === true;
+      if (useGpu) {
+        createOptions.HostConfig.DeviceRequests = [{ Driver: 'nvidia', Count: -1, Capabilities: [['gpu']] }];
+        if (!env.some((e) => e.startsWith('NVIDIA_VISIBLE_DEVICES='))) env.push('NVIDIA_VISIBLE_DEVICES=all');
+        if (!env.some((e) => e.startsWith('NVIDIA_DRIVER_CAPABILITIES='))) env.push('NVIDIA_DRIVER_CAPABILITIES=all');
+      }
+
       // Add resource limits
       if (template.resourceLimits) {
         if (template.resourceLimits.memoryLimits) {
@@ -150,6 +178,8 @@ export function createAppsRouter(dockerService: DockerService, appTemplates: App
 
       res.json({
         success: true,
+        id: container.id,
+        containerId: container.id.substring(0, 12),
         containerName,
         containerImage: `${template.dockerImage}:${template.dockerTag}`,
         ports: template.ports,

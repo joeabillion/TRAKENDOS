@@ -1,25 +1,20 @@
 import React from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
 import { formatBytes } from '../../utils/formatters'
+import { SkeletonCard } from '../common/Skeleton'
 
 export const MemoryWidget: React.FC = () => {
   const stats = useSystemStats()
 
-  if (!stats) {
-    return (
-      <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
-        <div className="text-sm text-trakend-text-secondary">Loading memory data...</div>
-      </div>
-    )
-  }
+  if (!stats) return <SkeletonCard title="Memory" tiles={3} bodyHeight={60} className="h-full" />
 
   const pct = stats.memory.total > 0 ? (stats.memory.used / stats.memory.total) * 100 : 0
   const pctColor = pct > 80 ? 'text-trakend-error' : pct > 60 ? 'text-trakend-warning' : 'text-trakend-accent'
   const barColor = pct > 80 ? 'bg-trakend-error' : pct > 60 ? 'bg-trakend-warning' : 'bg-trakend-accent'
 
   return (
-    <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6">
-      <h3 className="text-lg font-semibold text-trakend-text-primary mb-4">Memory</h3>
+    <div className="bg-trakend-surface border border-trakend-border rounded-lg p-4 h-full">
+      <h3 className="text-base font-semibold text-trakend-text-primary mb-4">Memory</h3>
 
       {/* Usage bar */}
       <div className="mb-4">

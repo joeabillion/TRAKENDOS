@@ -35,6 +35,7 @@ interface CreateConfig {
   memoryMb?: number
   network?: string
   privileged?: boolean
+  gpu?: 'nvidia' | 'none'
 }
 
 const STEPS = ['Image', 'Container Name', 'Ports', 'Environment', 'Volumes', 'Advanced', 'Review']
@@ -74,14 +75,18 @@ export const ContainerCreateDialog: React.FC<ContainerCreateDialogProps> = ({ on
         ...(config.memoryMb && { memoryMb: config.memoryMb }),
         ...(config.network && { network: config.network }),
         ...(config.privileged && { privileged: config.privileged }),
+        ...(config.gpu && config.gpu !== 'none' && { gpu: config.gpu }),
       }
 
-      await api.post('/docker/containers/create', containerConfig)
-      await api.post(`/docker/containers/${config.containerName}/start`)
+      // Backend creates AND starts the container, returning { containerId }
+      const response = await api.post('/docker/containers/create', containerConfig)
+      if (!response?.data?.containerId) {
+        throw new Error('Container was created but no id was returned')
+      }
       onSuccess?.()
       onClose()
     } catch (err: any) {
-      setError(err?.response?.data?.message || 'Failed to create container')
+      setError(err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Failed to create container')
     } finally {
       setDeploying(false)
     }
@@ -486,6 +491,17 @@ export const ContainerCreateDialog: React.FC<ContainerCreateDialogProps> = ({ on
                   className="rounded accent-trakend-accent"
                 />
                 <span className="text-sm text-trakend-text-primary">Run in privileged mode</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.gpu === 'nvidia'}
+                  onChange={(e) => setConfig({ ...config, gpu: e.target.checked ? 'nvidia' : 'none' })}
+                  className="rounded accent-trakend-accent"
+                />
+                <span className="text-sm text-trakend-text-primary">NVIDIA GPU passthrough</span>
+                <span className="text-xs text-trakend-text-secondary">(requires nvidia-container-toolkit)</span>
               </label>
             </div>
           )}

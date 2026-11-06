@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
 import { formatBytes } from '../../utils/formatters'
 import { CpuWidget } from './CpuWidget'
@@ -12,307 +12,269 @@ import { TemperaturesWidget } from './TemperaturesWidget'
 import { SwapWidget } from './SwapWidget'
 import { DockerContainersWidget } from './DockerContainersWidget'
 import { ArrayStatusWidget } from './ArrayStatusWidget'
-import { Server, Cpu, HardDrive, Box, Lock, Unlock, Move, Power, RotateCw, RotateCcw } from 'lucide-react'
+import { Server, Cpu, HardDrive, Box, Lock, Unlock, Power, RotateCw, RotateCcw, ChevronUp, ChevronDown, Eye, EyeOff, Maximize2, Minimize2 } from 'lucide-react'
 import api from '../../utils/api'
+import { Button } from '../common/Button'
+import { ConfirmDialog } from '../common/ConfirmDialog'
+import { Skeleton } from '../common/Skeleton'
+import { useToast } from '../common/Toast'
+import clsx from 'clsx'
 
 const WIDGET_MAP: Record<string, { label: string; component: React.FC }> = {
   cpu: { label: 'CPU', component: CpuWidget },
-  memory: { label: 'Memory', component: MemoryWidget },
-  gpu: { label: 'GPU', component: GpuWidget },
-  storage: { label: 'Storage', component: StorageWidget },
-  network: { label: 'Network', component: NetworkWidget },
-  processes: { label: 'Processes', component: ProcessesWidget },
-  diskio: { label: 'Disk I/O', component: DiskIOWidget },
   temperatures: { label: 'Temps & Fans', component: TemperaturesWidget },
+  memory: { label: 'Memory', component: MemoryWidget },
   swap: { label: 'Swap', component: SwapWidget },
-  docker_containers: { label: 'Docker Containers', component: DockerContainersWidget },
+  gpu: { label: 'GPU', component: GpuWidget },
+  network: { label: 'Network', component: NetworkWidget },
+  diskio: { label: 'Disk I/O', component: DiskIOWidget },
+  storage: { label: 'Storage', component: StorageWidget },
   array_status: { label: 'Array Status', component: ArrayStatusWidget },
+  docker_containers: { label: 'Docker Containers', component: DockerContainersWidget },
+  processes: { label: 'Processes', component: ProcessesWidget },
 }
 
-const WIDGET_KEYS = ['cpu', 'memory', 'gpu', 'storage', 'network', 'processes', 'diskio', 'temperatures', 'swap', 'docker_containers', 'array_status']
-const LAYOUT_KEY = 'trakend-dashboard-layout-v2'
+const DEFAULT_ORDER = ['cpu', 'temperatures', 'memory', 'swap', 'gpu', 'network', 'diskio', 'storage', 'array_status', 'docker_containers', 'processes']
+const DEFAULT_WIDE = new Set(['cpu', 'temperatures', 'storage', 'docker_containers', 'processes'])
+const LAYOUT_KEY = 'trakend-dashboard-grid-v3'
 
-interface WidgetLayout {
-  x: number
-  y: number
-  w: number
-  h: number
-  z: number
+interface GridLayout {
+  order: string[]
+  hidden: string[]
+  wide: string[]
 }
 
-function defaultLayouts(): Record<string, WidgetLayout> {
-  return {
-    cpu:                { x: 0,   y: 0,    w: 50,  h: 350, z: 1 },
-    temperatures:       { x: 50,  y: 0,    w: 50,  h: 350, z: 1 },
-    memory:             { x: 0,   y: 360,  w: 33,  h: 280, z: 1 },
-    swap:               { x: 33,  y: 360,  w: 33,  h: 280, z: 1 },
-    gpu:                { x: 66,  y: 360,  w: 34,  h: 280, z: 1 },
-    network:            { x: 0,   y: 650,  w: 50,  h: 300, z: 1 },
-    diskio:             { x: 50,  y: 650,  w: 50,  h: 300, z: 1 },
-    storage:            { x: 0,   y: 960,  w: 50,  h: 320, z: 1 },
-    array_status:       { x: 50,  y: 960,  w: 50,  h: 320, z: 1 },
-    docker_containers:  { x: 0,   y: 1290, w: 50,  h: 350, z: 1 },
-    processes:          { x: 50,  y: 1290, w: 50,  h: 350, z: 1 },
-  }
+function defaultLayout(): GridLayout {
+  return { order: [...DEFAULT_ORDER], hidden: [], wide: [...DEFAULT_WIDE] }
 }
 
-function loadLayouts(): Record<string, WidgetLayout> {
-  const defaults = defaultLayouts()
+function loadLayout(): GridLayout {
+  const def = defaultLayout()
   try {
-    const saved = localStorage.getItem(LAYOUT_KEY)
-    if (saved) {
-      const parsed = JSON.parse(saved)
-      if (typeof parsed === 'object' && parsed.cpu) {
-        // Merge: use saved positions but fill in any missing new widgets from defaults
-        return { ...defaults, ...parsed }
-      }
+    const raw = localStorage.getItem(LAYOUT_KEY)
+    if (!raw) return def
+    const parsed = JSON.parse(raw)
+    const order: string[] = Array.isArray(parsed.order) ? parsed.order.filter((k: string) => WIDGET_MAP[k]) : def.order
+    // append any widgets added since the layout was saved
+    for (const k of DEFAULT_ORDER) if (!order.includes(k)) order.push(k)
+    return {
+      order,
+      hidden: Array.isArray(parsed.hidden) ? parsed.hidden.filter((k: string) => WIDGET_MAP[k]) : [],
+      wide: Array.isArray(parsed.wide) ? parsed.wide.filter((k: string) => WIDGET_MAP[k]) : def.wide,
     }
-  } catch { /* ignore */ }
-  return defaults
-}
-
-function saveLayouts(layouts: Record<string, WidgetLayout>) {
-  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layouts))
+  } catch {
+    return def
+  }
 }
 
 export const Dashboard: React.FC = () => {
   const stats = useSystemStats()
-  const [layouts, setLayouts] = useState<Record<string, WidgetLayout>>(loadLayouts)
+  const toast = useToast()
+  const [layout, setLayout] = useState<GridLayout>(loadLayout)
   const [locked, setLocked] = useState(true)
-  const [showPowerConfirm, setShowPowerConfirm] = useState<'reboot' | 'shutdown' | null>(null)
-  const [activeWidget, setActiveWidget] = useState<string | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const dragState = useRef<{ type: 'move' | 'resize'; key: string; startX: number; startY: number; origX: number; origY: number; origW: number; origH: number } | null>(null)
+  const [powerAction, setPowerAction] = useState<'reboot' | 'shutdown' | null>(null)
+  const [powerBusy, setPowerBusy] = useState(false)
 
-  useEffect(() => { saveLayouts(layouts) }, [layouts])
+  useEffect(() => {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout))
+  }, [layout])
 
-  const bringToFront = useCallback((key: string) => {
-    setLayouts(prev => {
-      const maxZ = Math.max(...Object.values(prev).map(l => l.z))
-      if (prev[key].z === maxZ) return prev
-      return { ...prev, [key]: { ...prev[key], z: maxZ + 1 } }
+  const move = useCallback((key: string, dir: -1 | 1) => {
+    setLayout((prev) => {
+      const order = [...prev.order]
+      const i = order.indexOf(key)
+      const j = i + dir
+      if (i < 0 || j < 0 || j >= order.length) return prev
+      ;[order[i], order[j]] = [order[j], order[i]]
+      return { ...prev, order }
     })
-    setActiveWidget(key)
   }, [])
 
-  const handleMouseDown = useCallback((e: React.MouseEvent, key: string, type: 'move' | 'resize') => {
-    if (locked) return
-    e.preventDefault()
-    e.stopPropagation()
-    bringToFront(key)
-    const container = containerRef.current
-    if (!container) return
-    const layout = layouts[key]
-    const rect = container.getBoundingClientRect()
-    dragState.current = {
-      type,
-      key,
-      startX: e.clientX,
-      startY: e.clientY,
-      origX: (layout.x / 100) * rect.width,
-      origY: layout.y,
-      origW: (layout.w / 100) * rect.width,
-      origH: layout.h,
-    }
-
-    const handleMouseMove = (ev: MouseEvent) => {
-      if (!dragState.current || !containerRef.current) return
-      const ds = dragState.current
-      const r = containerRef.current.getBoundingClientRect()
-      const dx = ev.clientX - ds.startX
-      const dy = ev.clientY - ds.startY
-
-      if (ds.type === 'move') {
-        const newX = Math.max(0, Math.min(r.width - ds.origW, ds.origX + dx))
-        const newY = Math.max(0, ds.origY + dy)
-        setLayouts(prev => ({
-          ...prev,
-          [ds.key]: { ...prev[ds.key], x: (newX / r.width) * 100, y: newY },
-        }))
-      } else {
-        const newW = Math.max(200, ds.origW + dx)
-        const newH = Math.max(100, ds.origH + dy)
-        setLayouts(prev => ({
-          ...prev,
-          [ds.key]: { ...prev[ds.key], w: (newW / r.width) * 100, h: newH },
-        }))
-      }
-    }
-
-    const handleMouseUp = () => {
-      dragState.current = null
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-  }, [locked, layouts, bringToFront])
-
-  const resetLayout = useCallback(() => {
-    setLayouts(defaultLayouts())
+  const toggleHidden = useCallback((key: string) => {
+    setLayout((prev) => ({
+      ...prev,
+      hidden: prev.hidden.includes(key) ? prev.hidden.filter((k) => k !== key) : [...prev.hidden, key],
+    }))
   }, [])
 
-  // Calculate container height from widget positions
-  const containerHeight = Math.max(800, ...Object.values(layouts).map(l => l.y + l.h + 20))
+  const toggleWide = useCallback((key: string) => {
+    setLayout((prev) => ({
+      ...prev,
+      wide: prev.wide.includes(key) ? prev.wide.filter((k) => k !== key) : [...prev.wide, key],
+    }))
+  }, [])
+
+  const runPower = async () => {
+    if (!powerAction) return
+    setPowerBusy(true)
+    try {
+      await api.post(`/system/${powerAction}`)
+      toast.info(powerAction === 'reboot' ? 'Server is restarting…' : 'Server is shutting down…')
+      setPowerAction(null)
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || err?.message || `Failed to ${powerAction}`)
+    } finally {
+      setPowerBusy(false)
+    }
+  }
+
+  const visible = layout.order.filter((k) => !layout.hidden.includes(k))
+  const hiddenWidgets = layout.order.filter((k) => layout.hidden.includes(k))
 
   return (
-    <div className="bg-trakend-dark min-h-full w-full flex-1">
-      <div className="p-4 w-full">
-        {/* Quick Stats Row */}
-        {stats && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <Server size={14} className="text-trakend-accent" />
-                <span className="text-xs text-trakend-text-secondary uppercase tracking-wide">System</span>
-              </div>
+    <div className="bg-trakend-dark w-full flex-1 p-4 sm:p-6 space-y-4">
+      {/* Quick Stats Row */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <QuickStat icon={<Server size={14} />} label="System" loading={!stats}>
+          {stats && (
+            <>
               <div className="text-sm font-bold text-trakend-text-primary truncate">{stats.hostname}</div>
               <div className="text-xs text-trakend-text-secondary font-mono truncate">{stats.os}</div>
-            </div>
-            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <Cpu size={14} className="text-trakend-accent" />
-                <span className="text-xs text-trakend-text-secondary uppercase tracking-wide">CPU</span>
-              </div>
+            </>
+          )}
+        </QuickStat>
+        <QuickStat icon={<Cpu size={14} />} label="CPU" loading={!stats}>
+          {stats && (
+            <>
               <div className="text-sm font-bold text-trakend-text-primary">{stats.cpu.usage.toFixed(1)}%</div>
-              <div className="text-xs text-trakend-text-secondary">{stats.cpu.cores}C / {stats.cpu.threads}T @ {((stats.cpu.clockSpeed || 0) / 1000).toFixed(1)} GHz</div>
-            </div>
-            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <HardDrive size={14} className="text-trakend-accent" />
-                <span className="text-xs text-trakend-text-secondary uppercase tracking-wide">Memory</span>
+              <div className="text-xs text-trakend-text-secondary">
+                {stats.cpu.cores}C / {stats.cpu.threads}T @ {((stats.cpu.clockSpeed || 0) / 1000).toFixed(1)} GHz
               </div>
-              <div className="text-sm font-bold text-trakend-text-primary">{formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)}</div>
-              <div className="text-xs text-trakend-text-secondary">{stats.memory.total > 0 ? ((stats.memory.used / stats.memory.total) * 100).toFixed(0) : 0}% used</div>
-            </div>
-            <div className="bg-trakend-surface border border-trakend-border rounded-lg p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <Box size={14} className="text-trakend-accent" />
-                <span className="text-xs text-trakend-text-secondary uppercase tracking-wide">Docker</span>
+            </>
+          )}
+        </QuickStat>
+        <QuickStat icon={<HardDrive size={14} />} label="Memory" loading={!stats}>
+          {stats && (
+            <>
+              <div className="text-sm font-bold text-trakend-text-primary">
+                {formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)}
               </div>
+              <div className="text-xs text-trakend-text-secondary">
+                {stats.memory.total > 0 ? ((stats.memory.used / stats.memory.total) * 100).toFixed(0) : 0}% used
+              </div>
+            </>
+          )}
+        </QuickStat>
+        <QuickStat icon={<Box size={14} />} label="Docker" loading={!stats}>
+          {stats && (
+            <>
               <div className="text-sm font-bold text-trakend-text-primary">{stats.docker.total} containers</div>
               <div className="text-xs">
                 <span className="text-trakend-success">{stats.docker.running} running</span>
                 {stats.docker.stopped > 0 && <span className="text-trakend-warning ml-2">{stats.docker.stopped} stopped</span>}
               </div>
-            </div>
-          </div>
-        )}
+            </>
+          )}
+        </QuickStat>
+      </div>
 
-        {/* Controls */}
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowPowerConfirm('reboot')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-warning hover:border-trakend-warning transition-colors">
-              <RotateCw size={13} /> Restart
-            </button>
-            <button onClick={() => setShowPowerConfirm('shutdown')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-error hover:border-trakend-error transition-colors">
-              <Power size={13} /> Shut Down
-            </button>
-          </div>
-          <div className="flex items-center gap-2">
-            {!locked && (
-              <button onClick={resetLayout}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-trakend-border text-trakend-text-secondary hover:text-trakend-text-primary transition-colors">
-                <RotateCcw size={13} /> Reset Layout
-              </button>
-            )}
-            <button onClick={() => setLocked(!locked)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-              style={{
-                background: locked ? 'transparent' : 'var(--color-accent)',
-                color: locked ? 'var(--color-text-secondary)' : '#fff',
-                border: locked ? '1px solid var(--color-border)' : '1px solid transparent',
-              }}>
-              {locked ? <Lock size={13} /> : <Unlock size={13} />}
-              {locked ? 'Locked' : 'Unlocked — drag & resize widgets freely'}
-            </button>
-          </div>
+      {/* Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="secondary" icon={<RotateCw size={13} />} onClick={() => setPowerAction('reboot')}>
+            Restart
+          </Button>
+          <Button size="sm" variant="danger" icon={<Power size={13} />} onClick={() => setPowerAction('shutdown')}>
+            Shut Down
+          </Button>
         </div>
-
-        {/* Free-form Widget Canvas */}
-        <div ref={containerRef} className="relative w-full" style={{ height: containerHeight }}>
-          {WIDGET_KEYS.map(key => {
-            const w = WIDGET_MAP[key]
-            if (!w) return null
-            const Comp = w.component
-            const layout = layouts[key]
-            const isActive = activeWidget === key && !locked
-            return (
-              <div
-                key={key}
-                className="absolute overflow-auto"
-                style={{
-                  left: `${layout.x}%`,
-                  top: layout.y,
-                  width: `${layout.w}%`,
-                  height: layout.h,
-                  zIndex: layout.z,
-                  outline: isActive ? '2px solid var(--color-accent)' : 'none',
-                  borderRadius: '0.5rem',
-                  transition: dragState.current?.key === key ? 'none' : 'outline 0.15s',
-                }}
-                onMouseDown={() => { if (!locked) bringToFront(key) }}
-              >
-                {/* Drag handle — top bar when unlocked */}
-                {!locked && (
-                  <div
-                    className="absolute top-0 left-0 right-0 h-7 z-20 flex items-center gap-1 px-2 cursor-move rounded-t-lg"
-                    style={{ background: 'rgba(0,0,0,0.5)' }}
-                    onMouseDown={e => handleMouseDown(e, key, 'move')}
-                  >
-                    <Move size={12} className="text-trakend-text-secondary" />
-                    <span className="text-[10px] text-trakend-text-secondary font-medium uppercase tracking-wide">{w.label}</span>
-                  </div>
-                )}
-                {/* Resize handle — bottom-right corner */}
-                {!locked && (
-                  <div
-                    className="absolute bottom-0 right-0 w-5 h-5 z-20 cursor-se-resize"
-                    style={{ background: 'linear-gradient(135deg, transparent 50%, var(--color-accent) 50%)', borderRadius: '0 0 0.5rem 0' }}
-                    onMouseDown={e => handleMouseDown(e, key, 'resize')}
-                  />
-                )}
-                <Comp />
-              </div>
-            )
-          })}
+        <div className="flex items-center gap-2">
+          {!locked && (
+            <Button size="sm" variant="ghost" icon={<RotateCcw size={13} />} onClick={() => setLayout(defaultLayout())}>
+              Reset layout
+            </Button>
+          )}
+          {!locked && hiddenWidgets.length > 0 && (
+            <div className="flex items-center gap-1 text-xs text-trakend-text-secondary">
+              Hidden:
+              {hiddenWidgets.map((k) => (
+                <button
+                  key={k}
+                  onClick={() => toggleHidden(k)}
+                  className="px-2 py-0.5 rounded border border-trakend-border hover:border-trakend-accent hover:text-trakend-text-primary focus-ring"
+                  title="Show widget"
+                >
+                  {WIDGET_MAP[k].label}
+                </button>
+              ))}
+            </div>
+          )}
+          <Button
+            size="sm"
+            variant={locked ? 'secondary' : 'primary'}
+            icon={locked ? <Lock size={13} /> : <Unlock size={13} />}
+            onClick={() => setLocked((l) => !l)}
+            aria-pressed={!locked}
+          >
+            {locked ? 'Customize' : 'Done'}
+          </Button>
         </div>
       </div>
 
-      {/* Power Confirmation Dialog */}
-      {showPowerConfirm && (
-        <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50">
-          <div className="bg-trakend-surface border border-trakend-border rounded-lg p-6 max-w-sm w-full mx-4">
-            <h2 className="text-lg font-semibold text-trakend-text-primary mb-2">
-              {showPowerConfirm === 'reboot' ? 'Restart Server?' : 'Shut Down Server?'}
-            </h2>
-            <p className="text-sm text-trakend-text-secondary mb-6">
-              {showPowerConfirm === 'reboot'
-                ? 'The server will restart. You will lose connection temporarily.'
-                : 'The server will shut down. You will need physical access to turn it back on.'}
-            </p>
-            <div className="flex gap-3 justify-end">
-              <button onClick={() => setShowPowerConfirm(null)}
-                className="px-4 py-2 rounded-lg text-sm bg-trakend-surface-light text-trakend-text-secondary hover:text-trakend-text-primary transition-colors">
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  try { await api.post(`/system/${showPowerConfirm === 'reboot' ? 'reboot' : 'shutdown'}`) } catch {}
-                  setShowPowerConfirm(null)
-                }}
-                className={`px-4 py-2 rounded-lg text-sm text-white transition-colors ${
-                  showPowerConfirm === 'reboot' ? 'bg-trakend-warning hover:bg-opacity-90' : 'bg-trakend-error hover:bg-opacity-90'
-                }`}>
-                {showPowerConfirm === 'reboot' ? 'Restart Now' : 'Shut Down Now'}
-              </button>
-            </div>
+      {/* Responsive widget grid */}
+      <div className="widget-grid">
+        {visible.map((key, idx) => {
+          const w = WIDGET_MAP[key]
+          if (!w) return null
+          const Comp = w.component
+          const wide = layout.wide.includes(key)
+          return (
+            <section
+              key={key}
+              aria-label={w.label}
+              className={clsx('relative min-w-0', wide && 'span-2', !locked && 'ring-1 ring-trakend-accent/40 rounded-lg')}
+            >
+              {!locked && (
+                <div className="absolute top-2 right-2 z-10 flex items-center gap-0.5 bg-trakend-dark/90 border border-trakend-border rounded-md p-0.5 shadow">
+                  <Button size="xs" variant="ghost" iconOnly aria-label="Move up" disabled={idx === 0} onClick={() => move(key, -1)} icon={<ChevronUp size={12} />} />
+                  <Button size="xs" variant="ghost" iconOnly aria-label="Move down" disabled={idx === visible.length - 1} onClick={() => move(key, 1)} icon={<ChevronDown size={12} />} />
+                  <Button size="xs" variant="ghost" iconOnly aria-label={wide ? 'Make narrow' : 'Make wide'} onClick={() => toggleWide(key)} icon={wide ? <Minimize2 size={12} /> : <Maximize2 size={12} />} />
+                  <Button size="xs" variant="ghost" iconOnly aria-label="Hide widget" onClick={() => toggleHidden(key)} icon={<EyeOff size={12} />} />
+                </div>
+              )}
+              <Comp />
+            </section>
+          )
+        })}
+        {visible.length === 0 && (
+          <div className="col-span-full text-center text-sm text-trakend-text-secondary py-12 flex flex-col items-center gap-2">
+            <Eye size={24} className="opacity-40" />
+            All widgets are hidden. Click Customize to show them again.
           </div>
-        </div>
-      )}
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={!!powerAction}
+        variant="danger"
+        loading={powerBusy}
+        title={powerAction === 'reboot' ? 'Restart server?' : 'Shut down server?'}
+        message={
+          powerAction === 'reboot'
+            ? 'The server will restart. Open terminals and running jobs will be interrupted and you will lose connection for a minute or two.'
+            : 'The server will power off. You will need physical access (or Wake-on-LAN) to turn it back on.'
+        }
+        confirmLabel={powerAction === 'reboot' ? 'Restart now' : 'Shut down now'}
+        onConfirm={runPower}
+        onCancel={() => !powerBusy && setPowerAction(null)}
+      />
     </div>
   )
 }
+
+const QuickStat: React.FC<{ icon: React.ReactNode; label: string; loading?: boolean; children?: React.ReactNode }> = ({ icon, label, loading, children }) => (
+  <div className="bg-trakend-surface border border-trakend-border rounded-lg p-3 min-w-0">
+    <div className="flex items-center gap-2 mb-1">
+      <span className="text-trakend-accent">{icon}</span>
+      <span className="text-xs text-trakend-text-secondary uppercase tracking-wide">{label}</span>
+    </div>
+    {loading ? (
+      <div className="space-y-1.5 pt-0.5">
+        <Skeleton className="h-3.5 w-3/4" />
+        <Skeleton className="h-3 w-1/2" />
+      </div>
+    ) : (
+      children
+    )}
+  </div>
+)

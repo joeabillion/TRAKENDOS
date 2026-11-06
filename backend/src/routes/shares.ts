@@ -1,6 +1,11 @@
 import { Router, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
-import { ShareService } from '../services/shareService';
+import { ShareService, ShareValidationError } from '../services/shareService';
+
+function sendError(res: Response, error: any): void {
+  const status = error instanceof ShareValidationError ? error.status : typeof error?.status === 'number' ? error.status : 500;
+  res.status(status).json({ error: error?.message || String(error) });
+}
 
 export function createSharesRouter(shareService: ShareService): Router {
   const router = Router();
@@ -93,7 +98,7 @@ export function createSharesRouter(shareService: ShareService): Router {
       const user = await shareService.createUser(username, password, homeDir);
       res.json(user);
     } catch (error: any) {
-      res.status(500).json({ error: error.message || String(error) });
+      sendError(res, error);
     }
   });
 
@@ -105,7 +110,7 @@ export function createSharesRouter(shareService: ShareService): Router {
       await shareService.updateUserPassword(req.params.username, password);
       res.json({ success: true });
     } catch (error: any) {
-      res.status(500).json({ error: error.message || String(error) });
+      sendError(res, error);
     }
   });
 
@@ -147,24 +152,37 @@ export function createSharesRouter(shareService: ShareService): Router {
   // POST /api/shares/create — create share
   router.post('/create', async (req: AuthRequest, res: Response) => {
     try {
-      const { name, path, comment, browseable, readOnly, guestOk, validUsers, writableUsers } = req.body;
+      const { name, path, comment, browseable, readOnly, guestOk, validUsers, writableUsers, timeMachine, tmMaxSize } = req.body || {};
       if (!name || !path) return res.status(400).json({ error: 'name and path are required' });
       const share = await shareService.createShare({
         name, path, comment, browseable, readOnly, guestOk, validUsers, writableUsers,
+        timeMachine: !!timeMachine,
+        tmMaxSize,
       });
       res.json(share);
     } catch (error: any) {
-      res.status(500).json({ error: error.message || String(error) });
+      sendError(res, error);
     }
   });
 
   // PUT /api/shares/:name — update share
   router.put('/:name', async (req: AuthRequest, res: Response) => {
     try {
-      const share = await shareService.updateShare(req.params.name, req.body);
+      const { path, comment, browseable, readOnly, guestOk, validUsers, writableUsers, timeMachine, tmMaxSize } = req.body || {};
+      const updates: Record<string, unknown> = {};
+      if (path !== undefined) updates.path = path;
+      if (comment !== undefined) updates.comment = comment;
+      if (browseable !== undefined) updates.browseable = !!browseable;
+      if (readOnly !== undefined) updates.readOnly = !!readOnly;
+      if (guestOk !== undefined) updates.guestOk = !!guestOk;
+      if (validUsers !== undefined) updates.validUsers = validUsers;
+      if (writableUsers !== undefined) updates.writableUsers = writableUsers;
+      if (timeMachine !== undefined) updates.timeMachine = !!timeMachine;
+      if (tmMaxSize !== undefined) updates.tmMaxSize = tmMaxSize;
+      const share = await shareService.updateShare(req.params.name, updates);
       res.json(share);
     } catch (error: any) {
-      res.status(500).json({ error: error.message || String(error) });
+      sendError(res, error);
     }
   });
 

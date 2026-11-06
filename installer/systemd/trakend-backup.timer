@@ -1,0 +1,11 @@
+# SOURCE OF TRUTH: installer/systemd/trakend-backup.timer in the Trakend OS repo.
+[Unit]
+Description=Trakend OS Nightly Config Backup
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+OnBootSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

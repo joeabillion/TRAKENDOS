@@ -12,6 +12,7 @@ import bcrypt from 'bcryptjs';
 import { DEFAULT_CONFIG } from './config/default';
 import { SettingsModel } from './models/settings';
 import { authMiddleware, optionalAuthMiddleware, createToken } from './middleware/auth';
+import { verifyToken } from './utils/secret';
 
 import { SystemMonitor } from './services/systemMonitor';
 import { EventLogger } from './services/eventLogger';
@@ -209,7 +210,7 @@ app.post('/api/auth/change-password', authMiddleware, (req: Request, res: Respon
 
 // API Routes with auth middleware
 app.use('/api/system', authMiddleware, createSystemRouter(systemMonitor));
-app.use('/api/docker', authMiddleware, createDockerRouter(dockerService));
+app.use('/api/docker', authMiddleware, createDockerRouter(dockerService, arrayService));
 app.use('/api/settings', authMiddleware, createSettingsRouter(settingsModel));
 app.use('/api/logs', authMiddleware, createLogsRouter(logger));
 app.use('/api/database', authMiddleware, createDatabaseRouter(databaseService));
@@ -217,7 +218,7 @@ app.use('/api/mysql', authMiddleware, createMysqlRouter(mysqlService));
 app.use('/api/maya', authMiddleware, createMayaRouter(mayaService));
 app.use('/api/updates', authMiddleware, createUpdatesRouter(updateService));
 app.use('/api/terminal', authMiddleware, createTerminalRouter(terminalService));
-app.use('/api/apps', authMiddleware, createAppsRouter(dockerService, appTemplatesService, logger));
+app.use('/api/apps', authMiddleware, createAppsRouter(dockerService, appTemplatesService, logger, arrayService));
 app.use('/api/array', authMiddleware, createArrayRoutes(arrayService));
 app.use('/api/files', authMiddleware, createFilesRouter(fileService));
 app.use('/api/shares', authMiddleware, createSharesRouter(shareService));
@@ -326,13 +327,31 @@ server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) =>
   if (socket.destroyed) return;
   socket.on('error', () => {}); // prevent unhandled error crashes
 
-  const url = (request.url || '').split('?')[0];
+  const [url, query = ''] = (request.url || '').split('?');
   // Only accept WebSocket upgrades on known /ws[/...] endpoints
   if (url !== '/ws' && !url.startsWith('/ws/')) {
     try { socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); } catch {}
     socket.destroy();
     return;
   }
+
+  // Authenticate the upgrade. Terminal/exec sockets are a root shell — never unauthenticated.
+  // Token comes from ?token= (set by the frontend) or Sec-WebSocket-Protocol "bearer,<jwt>".
+  let token = new URLSearchParams(query).get('token') || '';
+  if (!token) {
+    const proto = String(request.headers['sec-websocket-protocol'] || '');
+    const m = proto.split(',').map(s => s.trim());
+    const i = m.indexOf('bearer');
+    if (i >= 0 && m[i + 1]) token = m[i + 1];
+  }
+  const payload = token ? verifyToken(token) : null;
+  if (!payload) {
+    logger.warn('SECURITY', `Rejected unauthenticated WebSocket upgrade to ${url} from ${request.socket.remoteAddress}`);
+    try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch {}
+    socket.destroy();
+    return;
+  }
+  (request as any).user = payload;
 
   try {
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
@@ -425,9 +444,10 @@ const start = async () => {
     try {
       const arrayConfig = arrayService.getArrayConfig();
       if (arrayConfig.auto_start) {
-        logger.info('SYSTEM', `Auto-starting array (previous state: ${arrayConfig.state})...`);
-        // Reset state so startArray() doesn't reject with "already running"
-        arrayConfig.state = 'stopped';
+        // Persisted state is always stale at boot — reset it for real (not on a copy),
+        // otherwise startArray() rejects with "already running" and nothing gets mounted.
+        const prevState = arrayService.resetStateForBoot();
+        logger.info('SYSTEM', `Auto-starting array (previous state: ${prevState})...`);
         await arrayService.startArray();
         logger.info('SYSTEM', 'Array auto-started successfully');
       }
@@ -462,4 +482,5 @@ const start = async () => {
 
 start();
 
-// E
+// Export for testing
+export { app, server, db, logger };

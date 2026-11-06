@@ -4,6 +4,7 @@ import { Terminal as XTerminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { useDocker } from '../../hooks/useDocker'
+import { wsUrl } from '../../context/WebSocketContext'
 
 interface ContainerShellModalProps {
   containerId: string
@@ -22,10 +23,8 @@ export const ContainerShellModal: React.FC<ContainerShellModalProps> = ({
   const wsRef = useRef<WebSocket | null>(null)
   const { execContainer } = useDocker()
 
-  const getWsUrl = (execId: string) => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${window.location.host}/ws/docker-exec/${execId}`
-  }
+  // Includes ?token=<jwt> so the backend upgrade handler can authenticate
+  const getWsUrl = (execId: string) => wsUrl(`/ws/docker-exec/${execId}`)
 
   const initTerminal = useCallback(async () => {
     if (!containerRef.current) return

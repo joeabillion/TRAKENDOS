@@ -1,0 +1,17 @@
+# Trakend OS extra (non-array) drive auto-mount.
+# SOURCE OF TRUTH: installer/systemd/trakend-drives.service in the Trakend OS repo.
+#
+# Installed but NOT enabled by default (no [Install] section): the array
+# service owns array disks (label trakend-data / trakend-disk*), and
+# auto-mounting them at /mnt/disks/<label> before trakend-os starts fights the
+# array. Enable manually only on hosts with standalone data disks:
+#   systemctl add-wants multi-user.target trakend-drives.service
+[Unit]
+Description=Trakend OS Extra Drive Detection
+After=local-fs.target
+Before=trakend-os.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/trakend/scripts/detect-extra-drives.sh
+RemainAfterExit=yes

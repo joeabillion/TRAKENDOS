@@ -1,8 +1,10 @@
 import React from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
+import { SkeletonCard } from '../common/Skeleton'
 
 export const ProcessesWidget: React.FC = () => {
   const stats = useSystemStats()
+  if (!stats) return <SkeletonCard title="Processes" tiles={0} bodyHeight={160} className="h-full" />
   const procs = stats?.processes
 
   return (

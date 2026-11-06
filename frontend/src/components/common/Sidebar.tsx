@@ -1,5 +1,5 @@
 import React from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard,
   HardDrive,
@@ -11,6 +11,7 @@ import {
   ScrollText,
   Zap,
   Settings,
+  X,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useWebSocket } from '../../context/WebSocketContext'
@@ -22,83 +23,108 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { path: '/', label: 'Dashboard', icon: <LayoutDashboard size={20} /> },
-  { path: '/array', label: 'Array', icon: <HardDrive size={20} /> },
-  { path: '/docker', label: 'Docker', icon: <Container size={20} /> },
-  { path: '/database', label: 'Database', icon: <Database size={20} /> },
-  { path: '/files', label: 'Files', icon: <FolderOpen size={20} /> },
-  { path: '/shares', label: 'Shares', icon: <Share2 size={20} /> },
-  { path: '/terminal', label: 'Terminal', icon: <Terminal size={20} /> },
-  { path: '/logs', label: 'Logs', icon: <ScrollText size={20} /> },
-  { path: '/maya', label: 'Maya AI', icon: <Zap size={20} /> },
-  { path: '/settings', label: 'Settings', icon: <Settings size={20} /> },
+  { path: '/', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
+  { path: '/array', label: 'Array', icon: <HardDrive size={18} /> },
+  { path: '/docker', label: 'Docker', icon: <Container size={18} /> },
+  { path: '/database', label: 'Database', icon: <Database size={18} /> },
+  { path: '/files', label: 'Files', icon: <FolderOpen size={18} /> },
+  { path: '/shares', label: 'Shares', icon: <Share2 size={18} /> },
+  { path: '/terminal', label: 'Terminal', icon: <Terminal size={18} /> },
+  { path: '/logs', label: 'Logs', icon: <ScrollText size={18} /> },
+  { path: '/maya', label: 'Maya AI', icon: <Zap size={18} /> },
+  { path: '/settings', label: 'Settings', icon: <Settings size={18} /> },
 ]
 
-export const Sidebar: React.FC = () => {
-  const location = useLocation()
-  const { connected } = useWebSocket()
+interface SidebarProps {
+  /** Drawer state on < 1024px screens (ignored on desktop). */
+  open?: boolean
+  onClose?: () => void
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ open = false, onClose }) => {
+  const { connected, reconnecting, systemStats } = useWebSocket()
 
   return (
-    <aside className="w-64 bg-trakend-surface border-r border-trakend-border h-screen flex flex-col">
+    <aside className={clsx('app-sidebar', open && 'open')} aria-label="Primary navigation">
       {/* Logo */}
-      <div className="p-6 border-b border-trakend-border">
-        <div className="flex items-center gap-3">
+      <div className="h-topbar px-4 border-b border-trakend-border flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
           <img
             src="/logo/icon.png"
-            alt="Trakend OS"
-            className="w-8 h-8 object-contain"
+            alt=""
+            className="w-7 h-7 object-contain flex-shrink-0"
             onError={(e) => {
               const target = e.target as HTMLImageElement
               if (target.src.endsWith('.png')) {
                 target.src = '/logo/icon.svg'
               } else {
-                // Fallback to styled letter
                 target.style.display = 'none'
                 const fallback = target.parentElement?.querySelector('.icon-fallback') as HTMLElement
                 if (fallback) fallback.style.display = 'flex'
               }
             }}
           />
-          <div className="icon-fallback hidden w-8 h-8 rounded items-center justify-center"
-            style={{ background: 'linear-gradient(135deg, var(--color-accent), var(--color-accent-dark))' }}>
-            <span className="text-white font-bold">T</span>
+          <div
+            className="icon-fallback hidden w-7 h-7 rounded items-center justify-center flex-shrink-0"
+            style={{ background: 'linear-gradient(135deg, var(--color-accent), var(--color-accent-dark))' }}
+          >
+            <span className="text-white font-bold text-sm">T</span>
           </div>
-          <h1 className="text-xl font-bold text-trakend-text-primary">Trakend OS</h1>
+          <h1 className="text-base font-bold text-trakend-text-primary truncate">Trakend OS</h1>
         </div>
+        {onClose && (
+          <button
+            onClick={onClose}
+            aria-label="Close navigation"
+            className="lg:hidden p-1.5 rounded text-trakend-text-secondary hover:text-trakend-text-primary hover:bg-trakend-surface-light focus-ring"
+          >
+            <X size={16} />
+          </button>
+        )}
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-4">
-        <ul className="space-y-2 px-3">
+      <nav className="flex-1 overflow-y-auto py-3">
+        <ul className="space-y-1 px-2">
           {navItems.map((item) => (
             <li key={item.path}>
-              <Link
+              <NavLink
                 to={item.path}
-                className={clsx(
-                  'flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200',
-                  location.pathname === item.path
-                    ? 'bg-trakend-accent text-white shadow-lg'
-                    : 'text-trakend-text-secondary hover:bg-trakend-surface-light hover:text-trakend-text-primary'
-                )}
+                end={item.path === '/'}
+                className={({ isActive }) =>
+                  clsx(
+                    'flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors focus-ring',
+                    isActive
+                      ? 'bg-trakend-accent text-white shadow'
+                      : 'text-trakend-text-secondary hover:bg-trakend-surface-light hover:text-trakend-text-primary'
+                  )
+                }
               >
-                {item.icon}
-                <span className="text-sm font-medium">{item.label}</span>
-              </Link>
+                <span className="flex-shrink-0">{item.icon}</span>
+                <span>{item.label}</span>
+              </NavLink>
             </li>
           ))}
         </ul>
       </nav>
 
       {/* Footer Status */}
-      <div className="border-t border-trakend-border p-4">
+      <div className="border-t border-trakend-border p-3">
         <div className="flex items-center gap-2 text-xs text-trakend-text-secondary">
-          <div className={clsx(
-            'w-2 h-2 rounded-full',
-            connected ? 'bg-trakend-success animate-pulse' : 'bg-trakend-error'
-          )}></div>
-          <span>{connected ? 'System Online' : 'Disconnected'}</span>
+          <span
+            className={clsx(
+              'w-2 h-2 rounded-full flex-shrink-0',
+              connected ? 'bg-trakend-success animate-pulse' : reconnecting ? 'bg-trakend-warning animate-pulse' : 'bg-trakend-error'
+            )}
+          />
+          <span className="truncate">
+            {connected ? systemStats?.hostname || 'System online' : reconnecting ? 'Reconnecting…' : 'Disconnected'}
+          </span>
         </div>
+        {systemStats?.os && <div className="mt-1 text-[10px] text-trakend-text-muted truncate pl-4">{systemStats.os}</div>}
       </div>
     </aside>
   )
 }
+
+export default Sidebar

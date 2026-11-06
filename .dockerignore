@@ -5,9 +5,10 @@
 # directory (~1.4 GB+) as build context, causing hangs.
 # With it, context drops to ~50 MB.
 
-# Git history (can be 100s of MB)
-.git
-.gitignore
+# Git history is INCLUDED on purpose: the installed /opt/trakend/os must be a
+# real git checkout so the in-app updater (git pull --ff-only) works.
+# build-iso.sh runs `git gc --aggressive` before embedding it to keep the ISO small.
+# (Only large non-git junk is excluded below.)
 
 # Node modules (reinstalled inside Docker)
 node_modules
@@ -22,6 +23,11 @@ build
 # Previous ISO output (1.5 GB!)
 installer/output
 installer/output/*
+
+# Legacy Unraid flash backup — contains shadow/smbpasswd/SSH host keys. Never
+# ship it inside the ISO. (It is still in git history; see build-iso.sh rsync exclude.)
+unraid old
+unraid old/**
 
 # IDE / editor files
 .vscode

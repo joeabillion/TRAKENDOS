@@ -130,6 +130,8 @@ export interface GPUInfo {
   temperature?: number;
   utilization?: number;
   driver?: string;
+  /** Set when nvidia-smi exists but failed (e.g. driver/kernel module mismatch). First line of stderr. */
+  driverError?: string;
 }
 
 export interface NetworkInterface {
@@ -292,6 +294,8 @@ export class SystemMonitor {
           temperature: g.temperature || 0,
           utilization: g.utilization || 0,
           driver: g.driver || '',
+          driverVersion: (g.driver || '') as string | undefined,
+          driverError: g.driverError as string | undefined,
         })),
         network: (overview.networkInterfaces as any[]).filter((n: any) => n.ip4).map((n: any) => {
           const ns = netStatsMap[n.iface];
@@ -455,13 +459,17 @@ export class SystemMonitor {
   }
 
   private hasNvidiaSmi: boolean | null = null;
+  private lastNvidiaSmiError: string = '';
 
   private async getGPUInfo(): Promise<GPUInfo[]> {
-    // Try nvidia-smi first for NVIDIA GPUs (works better for Tesla/datacenter cards)
-    // Cache the check so we don't spam "not found" errors every poll cycle
+    // Try nvidia-smi first for NVIDIA GPUs (works better for Tesla/datacenter cards).
+    // Cache only the *binary existence* check. A runtime failure (driver/kernel
+    // module mismatch, "couldn't communicate with the NVIDIA driver", etc.) must
+    // NOT disable future attempts: the binary being present means a driver is
+    // installed, so a failure is a broken driver — report it, and retry each poll.
     if (this.hasNvidiaSmi === null) {
       try {
-        execSync('which nvidia-smi', { encoding: 'utf-8', timeout: 3000 });
+        execSync('which nvidia-smi', { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' });
         this.hasNvidiaSmi = true;
       } catch {
         this.hasNvidiaSmi = false;
@@ -471,8 +479,12 @@ export class SystemMonitor {
       try {
         const nvsmi = execSync(
           'nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,temperature.gpu,utilization.gpu,driver_version --format=csv,noheader,nounits',
-          { encoding: 'utf-8', timeout: 5000 }
+          { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }
         ).trim();
+        if (this.lastNvidiaSmiError) {
+          this.logger.info('SYSTEM', 'nvidia-smi recovered; GPU driver is responding again');
+          this.lastNvidiaSmiError = '';
+        }
         if (nvsmi) {
           return nvsmi.split('\n').map((line) => {
             const [model, vramTotal, vramUsed, vramFree, temp, util, driver] = line.split(', ').map(s => s.trim());
@@ -487,9 +499,25 @@ export class SystemMonitor {
             };
           });
         }
-      } catch {
-        // nvidia-smi failed at runtime — disable future attempts
-        this.hasNvidiaSmi = false;
+      } catch (err: any) {
+        const stderr: string = (err && err.stderr ? String(err.stderr) : '') || (err && err.message ? String(err.message) : '');
+        const firstLine = stderr.split('\n').map((l) => l.trim()).find((l) => l.length > 0) || 'nvidia-smi failed';
+        if (firstLine !== this.lastNvidiaSmiError) {
+          this.logger.error('SYSTEM', `nvidia-smi failed (GPU driver error): ${firstLine}`);
+          this.lastNvidiaSmiError = firstLine;
+        }
+        return [
+          {
+            model: 'NVIDIA GPU (driver error)',
+            vram: 0,
+            vramUsed: 0,
+            vramFree: 0,
+            temperature: 0,
+            utilization: 0,
+            driver: '',
+            driverError: firstLine,
+          },
+        ];
       }
     }
     try {

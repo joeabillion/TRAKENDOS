@@ -1,0 +1,26 @@
+# Trakend OS Safe Mode (selected from the GRUB menu via trakend.safemode=1).
+# SOURCE OF TRUTH: installer/systemd/trakend-safemode.service in the Trakend OS repo.
+#
+# Deliberately NO Conflicts= here: trakend-os.service carries
+# ConditionKernelCommandLine=!trakend.safemode=1, so it never starts in safe
+# mode; the ExecStartPre stop is belt-and-braces for a manually started unit.
+[Unit]
+Description=Trakend OS Safe Mode
+ConditionKernelCommandLine=trakend.safemode=1
+After=network-online.target
+Wants=network-online.target
+Before=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=-/bin/systemctl stop trakend-os.service
+ExecStart=/opt/trakend/scripts/safemode.sh
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

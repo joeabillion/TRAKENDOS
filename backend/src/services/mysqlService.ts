@@ -412,6 +412,93 @@ export class MysqlService {
     }
   }
 
+  /** Validate an identifier (database/table name) and wrap it in backticks. */
+  private static quoteIdent(name: string, label: string): string {
+    if (typeof name !== 'string' || !/^[A-Za-z0-9_]+$/.test(name)) {
+      throw new Error(`Invalid ${label}: only letters, digits and underscore are allowed`);
+    }
+    return '`' + name + '`';
+  }
+
+  /** Full schema for a table: columns (DESCRIBE), indexes and SHOW CREATE TABLE. */
+  async describeTable(database: string, table: string): Promise<{
+    name: string;
+    columns: Array<ColumnInfo & { defaultValue: string | null }>;
+    indexes: Array<{ name: string; columns: string[]; unique: boolean; type: string }>;
+    createStatement: string;
+  }> {
+    const qDb = MysqlService.quoteIdent(database, 'database name');
+    const qTable = MysqlService.quoteIdent(table, 'table name');
+    try {
+      await this.ensureMariaDBRunning();
+      const conn = await this.getConnection();
+
+      const [desc] = await conn.query(`DESCRIBE ${qDb}.${qTable}`);
+      const columns = (desc as any[]).map((col) => ({
+        name: col.Field,
+        type: col.Type,
+        nullable: col.Null === 'YES',
+        key: col.Key || 'NONE',
+        default: col.Default,
+        defaultValue: col.Default === undefined ? null : col.Default,
+        extra: col.Extra || '',
+      }));
+
+      const [idx] = await conn.query(`SHOW INDEX FROM ${qDb}.${qTable}`);
+      const indexMap = new Map<string, { name: string; columns: string[]; unique: boolean; type: string }>();
+      for (const row of idx as any[]) {
+        const entry = indexMap.get(row.Key_name) || {
+          name: row.Key_name,
+          columns: [],
+          unique: row.Non_unique === 0 || row.Non_unique === '0',
+          type: row.Index_type || '',
+        };
+        entry.columns[Number(row.Seq_in_index) - 1] = row.Column_name;
+        indexMap.set(row.Key_name, entry);
+      }
+
+      const [create] = await conn.query(`SHOW CREATE TABLE ${qDb}.${qTable}`);
+      const createRow = (create as any[])[0] || {};
+      const createStatement = createRow['Create Table'] || createRow['Create View'] || '';
+
+      return {
+        name: table,
+        columns,
+        indexes: Array.from(indexMap.values()).map((i) => ({ ...i, columns: i.columns.filter(Boolean) })),
+        createStatement,
+      };
+    } catch (error) {
+      this.logger.error('MYSQL', `Failed to describe table: ${error}`);
+      throw error;
+    }
+  }
+
+  /** Paginated rows from a table plus the total row count. */
+  async getTableData(
+    database: string,
+    table: string,
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<{ data: any[]; totalRows: number; limit: number; offset: number }> {
+    const qDb = MysqlService.quoteIdent(database, 'database name');
+    const qTable = MysqlService.quoteIdent(table, 'table name');
+    const safeLimit = Math.min(Math.max(Math.trunc(Number(limit) || 100), 1), 1000);
+    const safeOffset = Math.max(Math.trunc(Number(offset) || 0), 0);
+    try {
+      await this.ensureMariaDBRunning();
+      const conn = await this.getConnection();
+
+      const [rows] = await conn.query(`SELECT * FROM ${qDb}.${qTable} LIMIT ? OFFSET ?`, [safeLimit, safeOffset]);
+      const [countRows] = await conn.query(`SELECT COUNT(*) AS total FROM ${qDb}.${qTable}`);
+      const totalRows = Number((countRows as any[])[0]?.total ?? 0);
+
+      return { data: (rows as any[]) || [], totalRows, limit: safeLimit, offset: safeOffset };
+    } catch (error) {
+      this.logger.error('MYSQL', `Failed to fetch table data: ${error}`);
+      throw error;
+    }
+  }
+
   async query(database: string, sql: string): Promise<any> {
     try {
       await this.ensureMariaDBRunning();

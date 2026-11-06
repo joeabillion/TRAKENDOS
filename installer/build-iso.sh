@@ -10,6 +10,7 @@
 #
 
 set -e
+set -o pipefail
 
 CYAN='\033[0;36m'
 GREEN='\033[0;32m'
@@ -18,8 +19,10 @@ YELLOW='\033[1;33m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-VERSION=$(grep '"version"' /build/trakend-os/package.json 2>/dev/null | head -1 | sed 's/.*"\([0-9][^"]*\)".*/\1/')
+VERSION=$(grep '"version"' /build/trakend-os/package.json 2>/dev/null | head -1 | sed 's/.*"\([0-9][^"]*\)".*/\1/' || true)
 VERSION="${VERSION:-1.0.000}"
+# Git remote the installed system will pull updates from (must match backend/src/config/default.ts)
+GIT_REPO_URL="${GIT_REPO_URL:-https://github.com/joeabillion/TRAKENDOS.git}"
 
 log()  { echo -e "${CYAN}[ISO]${NC} $1"; }
 ok()   { echo -e "${GREEN}[OK]${NC}  $1"; }
@@ -119,6 +122,8 @@ chroot "$DLROOT" bash -c '
     dialog live-boot \
     samba samba-common-bin \
     acpid systemd-sysv dbus \
+    xfsprogs btrfs-progs gdisk sqlite3 ethtool cifs-utils nfs-kernel-server \
+    rsync locales linux-firmware avahi-daemon avahi-utils wsdd \
     2>&1 | tail -10
 ' 2>&1
 
@@ -196,24 +201,67 @@ apt-get install -y nodejs > /dev/null 2>&1
 cp -a /build/trakend-os "$NPM_CACHE/trakend-os"
 cd "$NPM_CACHE/trakend-os"
 
-# Root install
-npm install --quiet 2>&1 | tail -5 || true
+# Keep the .git history so the installed /opt/trakend/os is a real repo and the
+# in-app updater (git pull --ff-only) works. Compact it first to keep the ISO small.
+if [ -d .git ]; then
+  git config --global --add safe.directory "$NPM_CACHE/trakend-os" 2>/dev/null || true
+  git gc --aggressive --prune=now 2>&1 | tail -2 || warn "git gc failed (continuing)"
+  # Make sure the installed system pulls from the canonical remote, not a dev's fork/SSH URL
+  git remote set-url origin "$GIT_REPO_URL" 2>/dev/null || git remote add origin "$GIT_REPO_URL" 2>/dev/null || true
+  ok "Git repository retained ($(du -sh .git | awk '{print $1}'), origin=$GIT_REPO_URL, HEAD=$(git rev-parse --short HEAD 2>/dev/null || echo '?'))"
+else
+  warn ".git not present in build context — installed system will need 'Initialize updates' (POST /api/updates/init-repo)"
+fi
 
-# Backend install + build
+# Root install (only 'concurrently' for dev; non-fatal)
+npm install --quiet --no-audit --no-fund 2>&1 | tail -5 || true
+
+# Backend install + build — MUST succeed; a missing dist/index.js makes the ISO useless.
 cd backend
-npm install --quiet 2>&1 | tail -5 || true
-npx tsc 2>&1 | tail -10 || warn "Backend TypeScript build had warnings"
-[ -f dist/index.js ] && ok "Backend compiled (dist/index.js)" || warn "Backend dist/index.js MISSING"
+if [ -f package-lock.json ]; then
+  npm ci --no-audit --no-fund 2>&1 | tail -5 || fail "Backend npm ci failed"
+else
+  npm install --no-audit --no-fund 2>&1 | tail -5 || fail "Backend npm install failed"
+fi
+npx tsc 2>&1 | tail -30 || fail "Backend TypeScript build FAILED"
+[ -f dist/index.js ] || fail "Backend dist/index.js MISSING after build"
+node --check dist/index.js || fail "Backend dist/index.js does not parse"
+ok "Backend compiled (dist/index.js)"
 cd ..
 
-# Frontend install + build
+# Frontend install + build — MUST succeed.
 cd frontend
-npm install --quiet 2>&1 | tail -5 || true
-npx vite build 2>&1 | tail -10 || warn "Frontend Vite build had warnings"
-[ -f dist/index.html ] && ok "Frontend built (dist/index.html)" || warn "Frontend dist/index.html MISSING"
+if [ -f package-lock.json ]; then
+  npm ci --no-audit --no-fund 2>&1 | tail -5 || fail "Frontend npm ci failed"
+else
+  npm install --no-audit --no-fund 2>&1 | tail -5 || fail "Frontend npm install failed"
+fi
+npx vite build 2>&1 | tail -30 || fail "Frontend Vite build FAILED"
+[ -f dist/index.html ] || fail "Frontend dist/index.html MISSING after build"
+ok "Frontend built (dist/index.html)"
 cd ..
 
-ok "npm dependencies installed and frontend built ($(du -sh "$NPM_CACHE/trakend-os" | awk '{print $1}'))"
+# node-pty must have compiled its native addon (needs build-essential/python3 in the Dockerfile)
+if [ -d backend/node_modules/node-pty ]; then
+  ls backend/node_modules/node-pty/build/Release/*.node >/dev/null 2>&1 \
+    || fail "node-pty native addon did not compile (build/Release/*.node missing) — check build-essential/python3/make/g++ in installer/Dockerfile"
+  ok "node-pty native addon present"
+fi
+
+# Required single-source-of-truth files for the target system
+for f in installer/systemd/trakend-os.service installer/systemd/trakend-safemode.service \
+         installer/systemd/trakend-drives.service installer/systemd/trakend-firstboot.service \
+         installer/systemd/trakend-backup.service installer/systemd/trakend-backup.timer \
+         installer/systemd/docker.service.d/trakend.conf \
+         installer/scripts/detect-extra-drives.sh installer/scripts/firstboot.sh installer/scripts/trakend-info.sh \
+         installer/apt/20auto-upgrades installer/apt/51trakend-gpu-blacklist \
+         installer/apt/99-trakend-nvidia-pin installer/apt/blacklist-nouveau.conf \
+         scripts/safemode/trakend-safemode.sh ws-wrapper.js; do
+  [ -f "$f" ] || fail "Required file missing from build context: $f"
+done
+ok "Systemd/apt/helper source files present"
+
+ok "npm dependencies installed and both packages built ($(du -sh "$NPM_CACHE/trakend-os" | awk '{print $1}'))"
 
 # Clean up download chroot
 umount "$DLROOT/dev/pts" 2>/dev/null || true
@@ -304,14 +352,11 @@ network:
   version: 2
   renderer: networkd
   ethernets:
-    all-en:
+    all-ethernet:
       match:
-        name: "en*"
+        name: "e*"
       dhcp4: true
-    all-eth:
-      match:
-        name: "eth*"
-      dhcp4: true
+      dhcp6: false
 EOF
 
 # Auto-login on tty1
@@ -335,10 +380,12 @@ log "Step 3/6: Embedding Trakend OS and offline package caches..."
 mkdir -p "$ROOTFS/opt/trakend"
 
 # Copy the pre-built project (with node_modules and frontend dist)
-rsync -a --exclude='.git' --exclude='installer/output' \
+rsync -a --exclude='installer/output' --exclude='unraid old' \
   "$NPM_CACHE/trakend-os/" "$ROOTFS/opt/trakend/os/"
 
-ok "Trakend OS project embedded (pre-built with dependencies)"
+[ -f "$ROOTFS/opt/trakend/os/backend/dist/index.js" ] || fail "backend/dist/index.js missing in embedded project"
+[ -f "$ROOTFS/opt/trakend/os/frontend/dist/index.html" ] || fail "frontend/dist/index.html missing in embedded project"
+ok "Trakend OS project embedded (pre-built with dependencies, .git retained)"
 
 # Copy the offline package caches
 mkdir -p "$ROOTFS/opt/trakend/offline-packages"
@@ -443,6 +490,8 @@ safe_reboot() {
 }
 
 OFFLINE_DIR="/opt/trakend/offline-packages"
+# Canonical update remote (keep in sync with backend/src/config/default.ts)
+GIT_REPO_URL="${GIT_REPO_URL:-https://github.com/joeabillion/TRAKENDOS.git}"
 
 clear
 echo ""
@@ -472,7 +521,62 @@ echo ""
 echo -e "  ${BOLD}Available drives for installation:${NC}"
 echo ""
 
-BOOT_DEV=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//' || echo "")
+# ── Identify the installer medium so it is NEVER offered as a target ──
+# In the live environment "/" is an overlay, so findmnt on / is useless. Find the
+# real device behind the live medium instead, and fall back to label / squashfs.
+parent_disk() {
+  # /dev/sdb1 -> sdb ; /dev/nvme0n1p1 -> nvme0n1 ; /dev/sr0 -> sr0 ; /dev/loop0 -> (backing file's disk)
+  local src="$1" pk
+  [ -z "$src" ] && return
+  if [[ "$src" == /dev/loop* ]]; then
+    local back; back=$(losetup -nO BACK-FILE "$src" 2>/dev/null | head -1)
+    [ -n "$back" ] && src=$(findmnt -n -o SOURCE -T "$back" 2>/dev/null | head -1)
+    [ -z "$src" ] && return
+  fi
+  [ -b "$src" ] || return
+  pk=$(lsblk -no PKNAME "$src" 2>/dev/null | head -1)
+  if [ -n "$pk" ]; then echo "$pk"; else basename "$src"; fi
+}
+
+EXCLUDE_DISKS=()
+for medium in /run/live/medium /lib/live/mount/medium /cdrom /run/initramfs/live; do
+  if mountpoint -q "$medium" 2>/dev/null; then
+    src=$(findmnt -n -o SOURCE --target "$medium" 2>/dev/null | head -1)
+    d=$(parent_disk "$src"); [ -n "$d" ] && EXCLUDE_DISKS+=("$d")
+  fi
+done
+# Backing device of the live squashfs (if mounted via loop)
+for lp in $(losetup -nO NAME 2>/dev/null); do
+  d=$(parent_disk "$lp"); [ -n "$d" ] && EXCLUDE_DISKS+=("$d")
+done
+# Any disk holding a partition labelled like our ISO, or a USB disk carrying our squashfs
+while IFS= read -r pline; do
+  pname=$(echo "$pline" | awk '{print $1}'); plabel=$(echo "$pline" | cut -d' ' -f2-)
+  case "$plabel" in
+    TRAKEND_LIVE|TRAKEND_OS_INSTALLER|TRAKEND_OS_INST*) d=$(parent_disk "/dev/$pname"); [ -n "$d" ] && EXCLUDE_DISKS+=("$d") ;;
+  esac
+done < <(lsblk -ln -o NAME,LABEL 2>/dev/null | awk 'NF>=2')
+for usbdisk in $(lsblk -d -n -o NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}'); do
+  for part in $(lsblk -ln -o NAME,TYPE "/dev/$usbdisk" 2>/dev/null | awk '$2=="part"{print $1}'); do
+    tmpm=$(mktemp -d)
+    if mount -o ro "/dev/$part" "$tmpm" 2>/dev/null; then
+      [ -f "$tmpm/live/filesystem.squashfs" ] && EXCLUDE_DISKS+=("$usbdisk")
+      umount "$tmpm" 2>/dev/null || true
+    fi
+    rmdir "$tmpm" 2>/dev/null || true
+  done
+done
+
+is_excluded_disk() {
+  local n="$1" e
+  for e in "${EXCLUDE_DISKS[@]}"; do [ "$e" = "$n" ] && return 0; done
+  return 1
+}
+if [ ${#EXCLUDE_DISKS[@]} -gt 0 ]; then
+  log "Installer medium detected on: $(printf '/dev/%s ' $(printf '%s\n' "${EXCLUDE_DISKS[@]}" | sort -u)) — excluded from targets"
+else
+  warn "Could not identify the installer medium — be careful which drive you pick!"
+fi
 
 DRIVES=()
 DRIVE_SIZES=()
@@ -488,8 +592,9 @@ while IFS= read -r line; do
   DEV_SIZE_GB=$((DEV_SIZE_B / 1073741824))
 
   [ "$DEV_TYPE" != "disk" ] && continue
-  [ "$DEV_PATH" = "$BOOT_DEV" ] && continue
+  is_excluded_disk "$DEV_NAME" && continue
   [[ "$DEV_NAME" == loop* ]] && continue
+  [[ "$DEV_NAME" == sr* ]] && continue
   [ "$DEV_SIZE_GB" -lt 20 ] && continue
 
   DRIVES+=("$DEV_PATH")
@@ -544,6 +649,30 @@ if [ "$CONFIRM" != "INSTALL" ]; then
   sleep 3
   safe_reboot
 fi
+
+# ── Network identity: primary NIC + hostname ──
+PRIMARY_NIC=$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')
+if [ -z "$PRIMARY_NIC" ]; then
+  for n in $(ls /sys/class/net 2>/dev/null | grep -E '^(en|eth)' | sort); do
+    [ "$(cat /sys/class/net/$n/operstate 2>/dev/null)" = "up" ] && { PRIMARY_NIC="$n"; break; }
+  done
+fi
+[ -z "$PRIMARY_NIC" ] && PRIMARY_NIC=$(ls /sys/class/net 2>/dev/null | grep -E '^(en|eth)' | sort | head -1)
+PRIMARY_MAC=""
+[ -n "$PRIMARY_NIC" ] && PRIMARY_MAC=$(cat "/sys/class/net/$PRIMARY_NIC/address" 2>/dev/null | tr 'A-F' 'a-f')
+MAC4=$(echo "$PRIMARY_MAC" | tr -d ':' | tail -c 5)
+DEFAULT_HOSTNAME="trakend${MAC4:+-$MAC4}"
+
+echo ""
+[ -n "$PRIMARY_NIC" ] && log "Primary network interface: ${PRIMARY_NIC} (${PRIMARY_MAC:-unknown MAC})" || warn "No ethernet interface detected — netplan will match any 'e*' interface"
+while :; do
+  read -p "  Hostname for this server [${DEFAULT_HOSTNAME}]: " NEW_HOSTNAME
+  NEW_HOSTNAME="${NEW_HOSTNAME:-$DEFAULT_HOSTNAME}"
+  NEW_HOSTNAME=$(echo "$NEW_HOSTNAME" | tr 'A-Z' 'a-z')
+  if [[ "$NEW_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then break; fi
+  fail "Invalid hostname (use a-z, 0-9 and '-', max 63 chars)."
+done
+ok "Hostname: ${NEW_HOSTNAME}"
 
 echo ""
 echo -e "  ${CYAN}${BOLD}Starting Trakend OS OFFLINE installation on ${TARGET}...${NC}"
@@ -659,10 +788,10 @@ mount --bind /sys "$INST/sys"
 # ── Step 4: Configure system ──
 progress "4/8" "Configuring system..."
 
-echo "trakend" > "$INST/etc/hostname"
-cat > "$INST/etc/hosts" << 'HOSTEOF'
+echo "$NEW_HOSTNAME" > "$INST/etc/hostname"
+cat > "$INST/etc/hosts" << HOSTEOF
 127.0.0.1   localhost
-127.0.1.1   trakend
+127.0.1.1   ${NEW_HOSTNAME}
 ::1         localhost ip6-localhost ip6-loopback
 HOSTEOF
 
@@ -741,7 +870,9 @@ else
     apt-get install -y -qq -o Dpkg::Options::="--no-triggers" \
       grub-efi-amd64 grub-efi-amd64-bin grub-efi-amd64-signed \
       shim-signed efibootmgr grub2-common \
-      smartmontools lm-sensors htop tmux 2>&1 | tail -10
+      smartmontools lm-sensors htop tmux samba samba-common-bin acpid \
+      xfsprogs btrfs-progs gdisk sqlite3 ethtool cifs-utils nfs-kernel-server \
+      rsync locales linux-firmware avahi-daemon avahi-utils wsdd 2>&1 | tail -10
   ' 2>&1
 fi
 
@@ -756,22 +887,36 @@ chroot "$INST" bash -c '
 mkdir -p "$INST/etc/network"
 touch "$INST/etc/network/interfaces"
 mkdir -p "$INST/etc/netplan"
+# One explicit entry for the primary NIC (matched by MAC so a renamed interface
+# still works). Two glob 'match:' blocks (en*/eth*) would later conflict with a
+# static-IP entry written by the UI, so we never emit those on the target.
+if [ -n "$PRIMARY_NIC" ] && [ -n "$PRIMARY_MAC" ]; then
+cat > "$INST/etc/netplan/01-trakend.yaml" << NETEOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${PRIMARY_NIC}:
+      match:
+        macaddress: "${PRIMARY_MAC}"
+      set-name: ${PRIMARY_NIC}
+      dhcp4: true
+      dhcp6: false
+NETEOF
+else
 cat > "$INST/etc/netplan/01-trakend.yaml" << 'NETEOF'
 network:
   version: 2
   renderer: networkd
   ethernets:
-    all-en:
+    primary:
       match:
-        name: "en*"
+        name: "e*"
       dhcp4: true
-      dhcp6: true
-    all-eth:
-      match:
-        name: "eth*"
-      dhcp4: true
-      dhcp6: true
+      dhcp6: false
 NETEOF
+fi
+chmod 0600 "$INST/etc/netplan/01-trakend.yaml" 2>/dev/null || true
 
 # fstab
 EFI_UUID=$(blkid -s UUID -o value "$T_EFI")
@@ -784,7 +929,20 @@ UUID=$ROOT_UUID   /           ext4   errors=remount-ro,noatime   0  1
 UUID=$BOOT_UUID   /boot       ext4   defaults,noatime            0  2
 UUID=$EFI_UUID    /boot/efi   vfat   umask=0077                  0  1
 UUID=$DATA_UUID   /data       ext4   defaults,noatime            0  2
+/swapfile         none        swap   sw                          0  0
 FSTAB
+
+# Swapfile on the root filesystem: 8 GiB, or 4 GiB when root is under 80 GiB
+SWAP_GB=8
+[ "$ROOT_GB" -lt 80 ] && SWAP_GB=4
+log "Creating ${SWAP_GB} GiB swapfile..."
+if fallocate -l "${SWAP_GB}G" "$INST/swapfile" 2>/dev/null || dd if=/dev/zero of="$INST/swapfile" bs=1M count=$((SWAP_GB * 1024)) status=none 2>/dev/null; then
+  chmod 0600 "$INST/swapfile"
+  mkswap "$INST/swapfile" > /dev/null 2>&1 && ok "Swapfile created (${SWAP_GB} GiB)" || warn "mkswap failed — swap disabled"
+else
+  warn "Could not allocate swapfile — removing fstab entry"
+  sed -i '\|^/swapfile|d' "$INST/etc/fstab"
+fi
 
 # Users
 chroot "$INST" bash -c '
@@ -796,7 +954,7 @@ chroot "$INST" bash -c '
 # SSH
 mkdir -p "$INST/etc/ssh/sshd_config.d"
 cat > "$INST/etc/ssh/sshd_config.d/trakend.conf" << 'SSHEOF'
-PermitRootLogin yes
+PermitRootLogin prohibit-password
 PasswordAuthentication yes
 Port 22
 SSHEOF
@@ -968,49 +1126,71 @@ ln -sf /data/logs "$INST/opt/trakend/os/data/logs"
 # No need for npm install or build — already done during ISO creation!
 ok "Trakend OS installed (pre-built — zero npm downloads needed)"
 
-cat > "$INST/opt/trakend/os/backend/.env" << 'ENVEOF'
+cat > "$INST/opt/trakend/os/backend/.env" << ENVEOF
 NODE_ENV=production
 PORT=80
+# Placeholder on purpose: the backend ignores it and uses /data/db/jwt.secret
+# (generated by trakend-firstboot.service on first boot).
 JWT_SECRET=TRAKEND_CHANGE_ME_ON_FIRST_LOGIN
 DATA_DIR=/data
 DB_PATH=/data/db/trakend.db
 LOG_DIR=/data/logs
+TRAKEND_VERSION=${VERSION}
+GIT_REPO_URL=${GIT_REPO_URL:-https://github.com/joeabillion/TRAKENDOS.git}
 ENVEOF
+chmod 0600 "$INST/opt/trakend/os/backend/.env"
 
-# Systemd service for Trakend OS
-cat > "$INST/etc/systemd/system/trakend-os.service" << SVCEOF
-[Unit]
-Description=Trakend OS Server Management Platform
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=0
-StartLimitBurst=0
+# Git: the installed tree is root-owned; mark it safe and point origin at the canonical remote
+if [ -d "$INST/opt/trakend/os/.git" ]; then
+  chroot "$INST" bash -c '
+    git config --global --add safe.directory /opt/trakend/os 2>/dev/null || true
+    git -C /opt/trakend/os remote set-url origin "'"${GIT_REPO_URL:-https://github.com/joeabillion/TRAKENDOS.git}"'" 2>/dev/null || true
+  ' 2>/dev/null || true
+  ok "Git repository ready for in-app updates ($(chroot "$INST" git -C /opt/trakend/os rev-parse --short HEAD 2>/dev/null || echo '?'))"
+else
+  warn "No .git in /opt/trakend/os — use Settings > Updates > 'Initialize updates' after first boot"
+fi
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/trakend/os
-ExecStartPre=/bin/mkdir -p /data/docker /data/mysql /data/db /data/logs /data/backups
-ExecStart=/usr/bin/node backend/ws-wrapper.js
-Restart=always
-RestartSec=5
-TimeoutStopSec=10
-KillMode=mixed
-KillSignal=SIGTERM
-StandardOutput=journal
-StandardError=journal
-EnvironmentFile=-/opt/trakend/os/backend/.env
-Environment=NODE_ENV=production
-Environment=PORT=80
-Environment=DATA_DIR=/data
-Environment=DB_PATH=/data/db/trakend.db
-Environment=JWT_SECRET=TRAKEND_CHANGE_ME_ON_FIRST_LOGIN
-Environment=TRAKEND_VERSION=$VERSION
+# Systemd units — SINGLE SOURCE OF TRUTH is installer/systemd/ in the repo
+# (also applied to existing servers by scripts/apply-systemd-units.sh).
+UNIT_SRC="/opt/trakend/os/installer/systemd"
+HELPER_SRC="/opt/trakend/os/installer/scripts"
+APT_SRC="/opt/trakend/os/installer/apt"
+[ -f "$UNIT_SRC/trakend-os.service" ] || die "Missing $UNIT_SRC/trakend-os.service in installer image"
 
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-chroot "$INST" systemctl enable trakend-os 2>/dev/null || true
+install -m 0644 "$UNIT_SRC/trakend-os.service"        "$INST/etc/systemd/system/trakend-os.service"
+install -m 0644 "$UNIT_SRC/trakend-safemode.service"  "$INST/etc/systemd/system/trakend-safemode.service"
+install -m 0644 "$UNIT_SRC/trakend-drives.service"    "$INST/etc/systemd/system/trakend-drives.service"
+install -m 0644 "$UNIT_SRC/trakend-firstboot.service" "$INST/etc/systemd/system/trakend-firstboot.service"
+install -m 0644 "$UNIT_SRC/trakend-backup.service"    "$INST/etc/systemd/system/trakend-backup.service"
+install -m 0644 "$UNIT_SRC/trakend-backup.timer"      "$INST/etc/systemd/system/trakend-backup.timer"
+install -d -m 0755 "$INST/etc/systemd/system/docker.service.d"
+install -m 0644 "$UNIT_SRC/docker.service.d/trakend.conf" "$INST/etc/systemd/system/docker.service.d/trakend.conf"
+
+mkdir -p "$INST/opt/trakend/scripts"
+install -m 0755 "$HELPER_SRC/detect-extra-drives.sh" "$INST/opt/trakend/scripts/detect-extra-drives.sh"
+install -m 0755 "$HELPER_SRC/firstboot.sh"           "$INST/opt/trakend/scripts/firstboot.sh"
+install -m 0755 /opt/trakend/os/scripts/safemode/trakend-safemode.sh "$INST/opt/trakend/scripts/safemode.sh"
+
+chroot "$INST" systemctl enable trakend-os trakend-safemode trakend-firstboot trakend-backup.timer 2>/dev/null || true
+# trakend-drives is installed but intentionally NOT enabled (fights the array). No [Install] section.
+# Docker/docker.socket stay disabled — the array starts Docker. Verify:
+chroot "$INST" systemctl disable docker.service docker.socket 2>/dev/null || true
+chroot "$INST" systemctl is-enabled docker.service 2>/dev/null | grep -qx enabled && die "docker.service is still enabled — refusing to continue"
+
+# Network discovery + file sharing daemons (started at boot; Samba is configured by the shares service)
+chroot "$INST" systemctl enable avahi-daemon wsdd smbd nmbd 2>/dev/null || true
+ok "systemd units installed from $UNIT_SRC"
+
+# ── GPU / kernel safety: nothing may auto-upgrade nvidia/cuda/kernel packages ──
+install -d -m 0755 "$INST/etc/apt/apt.conf.d" "$INST/etc/apt/preferences.d" "$INST/etc/modprobe.d"
+install -m 0644 "$APT_SRC/20auto-upgrades"         "$INST/etc/apt/apt.conf.d/20auto-upgrades"
+install -m 0644 "$APT_SRC/51trakend-gpu-blacklist" "$INST/etc/apt/apt.conf.d/51trakend-gpu-blacklist"
+install -m 0644 "$APT_SRC/99-trakend-nvidia-pin"   "$INST/etc/apt/preferences.d/99-trakend-nvidia-pin"
+install -m 0644 "$APT_SRC/blacklist-nouveau.conf"  "$INST/etc/modprobe.d/blacklist-nouveau.conf"
+chroot "$INST" systemctl mask apt-daily-upgrade.timer apt-daily-upgrade.service 2>/dev/null || true
+chroot "$INST" systemctl disable apt-daily.timer 2>/dev/null || true
+ok "APT auto-upgrades disabled; NVIDIA 580 pin + nouveau blacklist installed (see installer/GPU-DRIVER.md)"
 
 # Enable ACPI daemon for proper reboot/shutdown
 chroot "$INST" systemctl enable acpid 2>/dev/null || true
@@ -1034,92 +1214,8 @@ ls -t "$BACKUP_DIR"/trakend-config-*.tar.gz 2>/dev/null | tail -n +31 | xargs rm
 BKSCRIPT
 chmod +x "$INST/opt/trakend/config-backup.sh"
 
-cat > "$INST/etc/systemd/system/trakend-backup.service" << 'BSVC'
-[Unit]
-Description=Trakend OS Config Backup
-[Service]
-Type=oneshot
-ExecStart=/opt/trakend/config-backup.sh
-BSVC
-
-cat > "$INST/etc/systemd/system/trakend-backup.timer" << 'BTMR'
-[Unit]
-Description=Trakend OS Nightly Config Backup
-[Timer]
-OnCalendar=*-*-* 02:00:00
-OnBootSec=15min
-Persistent=true
-[Install]
-WantedBy=timers.target
-BTMR
-chroot "$INST" systemctl enable trakend-backup.timer 2>/dev/null || true
-
-# Extra drive detection
-mkdir -p "$INST/opt/trakend/scripts"
-cat > "$INST/opt/trakend/scripts/detect-extra-drives.sh" << 'EXTRADRV'
-#!/bin/bash
-ROOT_DEV=$(findmnt -n -o SOURCE / | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
-while IFS= read -r line; do
-  DEV_NAME=$(echo "$line" | awk '{print $1}')
-  DEV_PATH="/dev/$DEV_NAME"
-  DEV_SIZE_B=$(lsblk -b -d -n -o SIZE "$DEV_PATH" 2>/dev/null || echo 0)
-  [ "$DEV_PATH" = "$ROOT_DEV" ] && continue
-  [[ "$DEV_NAME" == loop* ]] && continue
-  [ "$DEV_SIZE_B" -lt 1073741824 ] && continue
-  while IFS= read -r pname; do
-    PPATH="/dev/$pname"
-    PFSTYPE=$(blkid -s TYPE -o value "$PPATH" 2>/dev/null || echo "")
-    PLABEL=$(blkid -s LABEL -o value "$PPATH" 2>/dev/null || echo "$pname")
-    case "$PFSTYPE" in ext4|ext3|xfs|btrfs|ntfs) ;; *) continue ;; esac
-    MNT="/mnt/disks/$PLABEL"
-    mkdir -p "$MNT"
-    mountpoint -q "$MNT" 2>/dev/null && continue
-    if [ "$PFSTYPE" = "ntfs" ]; then
-      mount -t ntfs-3g "$PPATH" "$MNT" 2>/dev/null || continue
-    else
-      mount "$PPATH" "$MNT" 2>/dev/null || continue
-    fi
-    logger -t "trakend-drives" "Mounted $PPATH at $MNT"
-  done < <(lsblk -n -o NAME "$DEV_PATH" | tail -n +2)
-done < <(lsblk -d -n -o NAME,TYPE | grep "disk")
-EXTRADRV
-chmod +x "$INST/opt/trakend/scripts/detect-extra-drives.sh"
-
-cat > "$INST/etc/systemd/system/trakend-drives.service" << 'DSVC'
-[Unit]
-Description=Trakend OS Extra Drive Detection
-After=local-fs.target
-Before=docker.service trakend-os.service
-[Service]
-Type=oneshot
-ExecStart=/opt/trakend/scripts/detect-extra-drives.sh
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-DSVC
-chroot "$INST" systemctl enable trakend-drives 2>/dev/null || true
-
-# Safe mode
-[ -f /opt/trakend/os/scripts/safemode/trakend-safemode.sh ] && \
-  cp /opt/trakend/os/scripts/safemode/trakend-safemode.sh "$INST/opt/trakend/scripts/safemode.sh"
-chmod +x "$INST/opt/trakend/scripts/safemode.sh" 2>/dev/null || true
-
-cat > "$INST/etc/systemd/system/trakend-safemode.service" << 'SMSVC'
-[Unit]
-Description=Trakend OS Safe Mode
-ConditionKernelCommandLine=trakend.safemode=1
-Before=docker.service
-[Service]
-Type=simple
-ExecStartPre=/bin/systemctl stop trakend-os.service
-ExecStart=/opt/trakend/scripts/safemode.sh
-StandardInput=tty
-StandardOutput=tty
-TTYPath=/dev/tty1
-[Install]
-WantedBy=multi-user.target
-SMSVC
-chroot "$INST" systemctl enable trakend-safemode 2>/dev/null || true
+# (trakend-backup.service/.timer, trakend-drives.service, trakend-safemode.service and
+#  the helper scripts were installed above from installer/systemd + installer/scripts.)
 
 ok "Trakend OS installed"
 
@@ -1174,6 +1270,17 @@ if [ -z "$KVER" ]; then
   [ -z "$KVER" ] && die "Kernel installation failed — cannot continue"
 fi
 ok "Kernel version: $KVER"
+
+# Hold kernel packages so apt never moves the kernel under the pinned NVIDIA 580 driver.
+log "Holding kernel packages (apt-mark hold)..."
+chroot "$INST" bash -c "
+  for p in linux-image-generic linux-headers-generic linux-generic \
+           linux-image-$KVER linux-headers-$KVER linux-modules-$KVER linux-modules-extra-$KVER; do
+    dpkg -s \"\$p\" >/dev/null 2>&1 && apt-mark hold \"\$p\" >/dev/null 2>&1 || true
+  done
+  apt-mark showhold 2>/dev/null | tr '\n' ' '
+" 2>/dev/null && echo "" || true
+ok "Kernel packages held"
 
 # Ensure initrd exists for this kernel
 if [ ! -f "$INST/boot/initrd.img-$KVER" ]; then
@@ -1366,15 +1473,7 @@ cat > "$INST/etc/motd" << 'MOTDEOF'
 
 MOTDEOF
 
-cat > "$INST/etc/profile.d/trakend-info.sh" << 'PROFEOF'
-#!/bin/bash
-IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-echo ""
-echo -e "  Web UI: \033[1;36mhttp://${IP}\033[0m"
-echo -e "  Login:  \033[1;33madmin\033[0m / \033[1;33mtrakend\033[0m"
-echo ""
-PROFEOF
-chmod +x "$INST/etc/profile.d/trakend-info.sh"
+install -m 0755 "$HELPER_SRC/trakend-info.sh" "$INST/etc/profile.d/trakend-info.sh"
 
 # Clean up offline packages from the installed system (save disk space)
 rm -rf "$INST/opt/trakend/offline-packages" 2>/dev/null || true
@@ -1407,9 +1506,11 @@ echo ""
 echo -e "  ${BOLD}Drive Layout:${NC}"
 echo -e "    EFI: 512MB | Boot: 1GB | Root: ${ROOT_GB}GB | Data: $((TARGET_SIZE - ROOT_GB - 2))GB"
 echo ""
-echo -e "  Web UI:  ${BOLD}http://<server-ip>${NC}"
-echo -e "  SSH:     ${BOLD}ssh trakend@<server-ip>${NC}"
-echo -e "  Login:   ${BOLD}admin / trakend${NC}"
+echo -e "  Hostname: ${BOLD}${NEW_HOSTNAME}${NC}"
+echo -e "  Web UI:   ${BOLD}http://${NEW_HOSTNAME}.local${NC}  or  ${BOLD}http://<server-ip>${NC}"
+echo -e "  SSH:      ${BOLD}ssh trakend@<server-ip>${NC}  (password: trakend — you must change it on first login)"
+echo -e "  Web login: ${BOLD}admin / trakend${NC}  — change it immediately"
+echo -e "  GPU:      install the NVIDIA 580 driver post-install — see installer/GPU-DRIVER.md"
 echo ""
 echo -e "  ${YELLOW}Remove the installer USB, then press Enter to reboot...${NC}"
 read

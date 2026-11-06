@@ -15,8 +15,9 @@
     "build:frontend": "cd frontend && npm run build",
     "start": "cd backend && npm start",
     "setup": "node scripts/setup.js",
-    "update:check": "git fetch origin && git log HEAD..origin/main --oneline",
-    "update:apply": "git pull origin main && npm run install:all && npm run build"
+    "update:check": "git fetch origin && git log HEAD..origin/$(git rev-parse --abbrev-ref HEAD) --oneline",
+    "update:apply": "git pull --ff-only && npm run install:all && npm run build",
+    "systemd:apply": "sudo bash scripts/apply-systemd-units.sh"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

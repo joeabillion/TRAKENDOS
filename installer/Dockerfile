@@ -45,9 +45,15 @@ RUN apt-get update && apt-get install -y \
     genisoimage \
     live-build \
     dpkg-dev \
+    build-essential \
+    python3 \
+    make \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the entire Trakend OS project into the builder
+# Copy the entire Trakend OS project into the builder.
+# NOTE: .git is intentionally NOT excluded by .dockerignore — the installed
+# /opt/trakend/os must be a real git checkout for in-app updates.
 COPY . /build/trakend-os
 
 # Copy the build script

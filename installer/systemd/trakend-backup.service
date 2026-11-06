@@ -1,0 +1,7 @@
+# SOURCE OF TRUTH: installer/systemd/trakend-backup.service in the Trakend OS repo.
+[Unit]
+Description=Trakend OS Config Backup
+
+[Service]
+Type=oneshot
+ExecStart=/opt/trakend/config-backup.sh

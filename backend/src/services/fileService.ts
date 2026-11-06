@@ -1,11 +1,47 @@
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
-import { exec, execSync } from 'child_process';
+import { exec, execFile, execSync } from 'child_process';
 import { promisify } from 'util';
 import { EventLogger } from './eventLogger';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+/**
+ * Run a binary with an argv array — no shell, so filenames containing `$(...)`,
+ * backticks, quotes or newlines can never become commands. All paths that come
+ * from users or from the filesystem MUST go through this, never through execAsync.
+ */
+async function run(cmd: string, args: string[], opts: { timeout?: number; maxBuffer?: number } = {}): Promise<string> {
+  const { stdout } = await execFileAsync(cmd, args, { timeout: opts.timeout ?? 15000, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024 });
+  return stdout;
+}
+
+/** uid/gid → name, read from /etc/passwd and /etc/group (cached 60s). Never shells out. */
+const idCache: { at: number; users: Map<number, string>; groups: Map<number, string> } = { at: 0, users: new Map(), groups: new Map() };
+function idName(kind: 'user' | 'group', id: number): string {
+  const now = Date.now();
+  if (now - idCache.at > 60000) {
+    idCache.at = now;
+    idCache.users = new Map(); idCache.groups = new Map();
+    const load = (file: string, into: Map<number, string>) => {
+      try {
+        for (const line of fs.readFileSync(file, 'utf-8').split('\n')) {
+          const c = line.split(':');
+          if (c.length >= 3) { const n = parseInt(c[2], 10); if (!isNaN(n) && !into.has(n)) into.set(n, c[0]); }
+        }
+      } catch { /* unreadable */ }
+    };
+    load('/etc/passwd', idCache.users);
+    load('/etc/group', idCache.groups);
+  }
+  const m = kind === 'user' ? idCache.users : idCache.groups;
+  return m.get(id) ?? String(id);
+}
+
+const VALID_MODE = /^[0-7]{3,4}$/;
+const VALID_NAME = /^[a-z_][a-z0-9_-]{0,31}\$?$/i;
 
 export interface FileEntry {
   name: string;
@@ -153,8 +189,8 @@ export class FileService {
     // Helper: get size info from df for a mountpoint
     const getDfInfo = async (mountpoint: string): Promise<{ size: number; used: number; available: number; usePercent: number }> => {
       try {
-        const { stdout } = await execAsync(`df -B1 "${mountpoint}" 2>/dev/null | tail -1`);
-        const parts = stdout.trim().split(/\s+/);
+        const stdout = await run('df', ['-B1', '--', mountpoint]);
+        const parts = (stdout.trim().split('\n').pop() || '').trim().split(/\s+/);
         if (parts.length >= 5) {
           const size = parseInt(parts[1]) || 0;
           const used = parseInt(parts[2]) || 0;
@@ -343,13 +379,8 @@ export class FileService {
         else if (fileStat.isFile()) { type = 'file'; totalFiles++; totalSize += fileStat.size; }
 
         // Get ownership
-        let owner = String(fileStat.uid);
-        let group = String(fileStat.gid);
-        try {
-          const { stdout: ow } = await execAsync(`stat -c '%U:%G' "${fullPath}" 2>/dev/null`);
-          const parts = ow.trim().split(':');
-          if (parts.length === 2) { owner = parts[0]; group = parts[1]; }
-        } catch { /* keep numeric */ }
+        const owner = idName('user', fileStat.uid);
+        const group = idName('group', fileStat.gid);
 
         // Check access
         let readable = true;
@@ -408,13 +439,8 @@ export class FileService {
     else if (fileStat.isSymbolicLink()) type = 'symlink';
     else if (fileStat.isFile()) type = 'file';
 
-    let owner = String(fileStat.uid);
-    let group = String(fileStat.gid);
-    try {
-      const { stdout } = await execAsync(`stat -c '%U:%G' "${resolvedPath}" 2>/dev/null`);
-      const parts = stdout.trim().split(':');
-      if (parts.length === 2) { owner = parts[0]; group = parts[1]; }
-    } catch { /* keep numeric */ }
+    const owner = idName('user', fileStat.uid);
+    const group = idName('group', fileStat.gid);
 
     let readable = true, writable = true;
     try { await fsp.access(resolvedPath, fs.constants.R_OK); } catch { readable = false; }
@@ -523,7 +549,7 @@ export class FileService {
 
     const stat = await fsp.lstat(resolvedSrc);
     if (stat.isDirectory()) {
-      await execAsync(`cp -r "${resolvedSrc}" "${resolvedDest}"`);
+      await run('cp', ['-a', '--', resolvedSrc, resolvedDest], { timeout: 10 * 60 * 1000 });
     } else {
       await fsp.copyFile(resolvedSrc, resolvedDest);
     }
@@ -538,7 +564,8 @@ export class FileService {
     if (this.isProtected(resolvedPath)) {
       throw new Error(`Cannot change permissions on protected system path: ${resolvedPath}`);
     }
-    await execAsync(`chmod ${mode} "${resolvedPath}"`);
+    if (!VALID_MODE.test(String(mode))) throw new Error(`Invalid mode "${mode}" — use octal like 644 or 0755`);
+    await run('chmod', [String(mode), '--', resolvedPath]);
     this.logger.info('FILES', `Changed permissions: ${resolvedPath} -> ${mode}`);
   }
 
@@ -550,8 +577,9 @@ export class FileService {
     if (this.isProtected(resolvedPath)) {
       throw new Error(`Cannot change ownership of protected system path: ${resolvedPath}`);
     }
+    if (!VALID_NAME.test(owner) || (group && !VALID_NAME.test(group))) throw new Error('Invalid owner or group name');
     const ownerGroup = group ? `${owner}:${group}` : owner;
-    await execAsync(`chown ${ownerGroup} "${resolvedPath}"`);
+    await run('chown', [ownerGroup, '--', resolvedPath]);
     this.logger.info('FILES', `Changed ownership: ${resolvedPath} -> ${ownerGroup}`);
   }
 
@@ -563,12 +591,16 @@ export class FileService {
     const results: FileSearchResult[] = [];
 
     try {
-      const { stdout } = await execAsync(
-        `find "${resolvedPath}" -maxdepth 5 -iname "*${query.replace(/['"\\]/g, '')}*" -type f -o -iname "*${query.replace(/['"\\]/g, '')}*" -type d 2>/dev/null | head -${maxResults}`,
-        { timeout: 15000 }
-      );
+      // -iname glob: escape glob metachars in the user query so it is a literal substring match
+      const glob = '*' + query.replace(/[\\*?[\]]/g, '\\$&') + '*';
+      let stdout = '';
+      try {
+        stdout = await run('find', [resolvedPath, '-maxdepth', '5', '(', '-type', 'f', '-o', '-type', 'd', ')', '-iname', glob, '-print'], { timeout: 15000 });
+      } catch (e: any) {
+        stdout = e?.stdout || ''; // find exits non-zero on permission-denied subdirs; keep what it found
+      }
 
-      for (const line of stdout.trim().split('\n').filter(l => l)) {
+      for (const line of stdout.split('\n').filter(l => l).slice(0, maxResults)) {
         try {
           const fileStat = await fsp.lstat(line);
           results.push({
@@ -598,18 +630,21 @@ export class FileService {
     try {
       // Use -F (fixed-string) to treat pattern as literal text, not regex
       // Prevents command injection and regex DoS attacks
-      const { stdout } = await execAsync(
-        `grep -rl -F --include="*.{txt,conf,cfg,log,json,xml,yaml,yml,ini,sh,py,js,ts,md,html,css}" -i -- "${pattern.replace(/"/g, '\\"')}" "${resolvedPath}" 2>/dev/null | head -${maxResults}`,
-        { timeout: 30000 }
-      );
+      const includes = ['txt','conf','cfg','log','json','xml','yaml','yml','ini','sh','py','js','ts','md','html','css']
+        .flatMap(ext => ['--include', `*.${ext}`]);
+      let stdout = '';
+      try {
+        stdout = await run('grep', ['-rl', '-F', '-i', ...includes, '--', pattern, resolvedPath], { timeout: 30000 });
+      } catch (e: any) {
+        stdout = e?.stdout || ''; // grep exits 1 when nothing matched
+      }
 
-      for (const line of stdout.trim().split('\n').filter(l => l)) {
+      for (const line of stdout.split('\n').filter(l => l).slice(0, maxResults)) {
         try {
           const fileStat = await fsp.lstat(line);
           // Get a line of context using -F flag
-          const { stdout: ctx } = await execAsync(
-            `grep -F -m 1 -i -- "${pattern.replace(/"/g, '\\"')}" "${line}" 2>/dev/null`
-          );
+          let ctx = '';
+          try { ctx = await run('grep', ['-F', '-m', '1', '-i', '--', pattern, line], { timeout: 10000 }); } catch { /* none */ }
           results.push({
             path: line,
             name: path.basename(line),
@@ -633,8 +668,8 @@ export class FileService {
   async getDirectorySize(dirPath: string): Promise<number> {
     const resolvedPath = path.resolve(dirPath);
     try {
-      const { stdout } = await execAsync(`du -sb "${resolvedPath}" 2>/dev/null | awk '{print $1}'`, { timeout: 30000 });
-      return parseInt(stdout.trim()) || 0;
+      const stdout = await run('du', ['-sb', '--', resolvedPath], { timeout: 30000 });
+      return parseInt(stdout.trim().split(/\s+/)[0]) || 0;
     } catch {
       return 0;
     }
@@ -646,8 +681,8 @@ export class FileService {
   async getDiskUsage(dirPath: string): Promise<{ total: number; used: number; free: number; percent: number }> {
     const resolvedPath = path.resolve(dirPath);
     try {
-      const { stdout } = await execAsync(`df -B1 "${resolvedPath}" 2>/dev/null | tail -1`);
-      const parts = stdout.trim().split(/\s+/);
+      const stdout = await run('df', ['-B1', '--', resolvedPath]);
+      const parts = (stdout.trim().split('\n').pop() || '').trim().split(/\s+/);
       return {
         total: parseInt(parts[1]) || 0,
         used: parseInt(parts[2]) || 0,

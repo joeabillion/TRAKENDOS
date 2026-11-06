@@ -1,0 +1,17 @@
+// Trakend OS: belt-and-braces in case unattended-upgrades is ever turned on.
+// Production servers run Tesla P40 (Pascal) on the NVIDIA 580 driver branch with
+// kernel 6.8 HWE. Driver/kernel packages must NEVER move without an operator.
+// Installed to /etc/apt/apt.conf.d/51trakend-gpu-blacklist
+Unattended-Upgrade::Package-Blacklist {
+    "nvidia-";
+    "libnvidia-";
+    "cuda";
+    "libcudnn";
+    "nvidia-container";
+    "linux-image-";
+    "linux-headers-";
+    "linux-modules-";
+    "linux-generic";
+};
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "false";
+Unattended-Upgrade::Automatic-Reboot "false";

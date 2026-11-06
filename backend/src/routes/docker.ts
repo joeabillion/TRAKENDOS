@@ -1,12 +1,210 @@
-import { Router, Response } from 'express';
+import { Router, Response, NextFunction } from 'express';
 import Docker from 'dockerode';
 import * as jsYaml from 'js-yaml';
 import { AuthRequest } from '../middleware/auth';
-import { DockerService } from '../services/dockerService';
+import { DockerService, DockerServiceError } from '../services/dockerService';
 import { WebSocket } from 'ws';
 
-export function createDockerRouter(dockerService: DockerService): Router {
+/** Minimal view of ArrayService needed for gating container mutations. */
+export interface ArrayStateProvider {
+  getArrayConfig(): { state: string };
+}
+
+/**
+ * Express middleware factory: when an array service is supplied and the array is not
+ * running, mutating container operations are refused with 409 ARRAY_NOT_RUNNING.
+ * Without an array service the check is skipped (backward compatible).
+ */
+export function requireArrayRunning(arrayService?: ArrayStateProvider) {
+  return (_req: AuthRequest, res: Response, next: NextFunction): void => {
+    if (!arrayService) {
+      next();
+      return;
+    }
+    let state = 'unknown';
+    try {
+      state = arrayService.getArrayConfig()?.state ?? 'unknown';
+    } catch {
+      state = 'unknown';
+    }
+    if (state !== 'running') {
+      res.status(409).json({
+        error: 'ARRAY_NOT_RUNNING',
+        message: 'Start the array before managing containers',
+        state,
+      });
+      return;
+    }
+    next();
+  };
+}
+
+/** Send an error with the status carried by DockerServiceError (default 500). */
+function sendError(res: Response, error: unknown): void {
+  if (res.headersSent) {
+    try {
+      res.write(`data: ${JSON.stringify({ error: String(error) })}\n\n`);
+      res.end();
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  const status = error instanceof DockerServiceError ? error.status : 500;
+  const statusCode = (error as any)?.statusCode;
+  res.status(status === 500 && typeof statusCode === 'number' ? statusCode : status).json({ error: String((error as any)?.message ?? error) });
+}
+
+/**
+ * Normalize the many shapes the frontend sends for container creation into a
+ * dockerode createContainer options object.
+ *
+ * Accepts both:
+ *  - env: { KEY: 'value' }               or environment: [{ name, value }]  or env: ['KEY=value']
+ *  - restartPolicy: 'unless-stopped'      or restartPolicy: { Name, MaximumRetryCount }
+ *  - cpuCores / memoryMb                  or resourceLimits: { cpuLimit, memoryLimit, ... }
+ *  - network: 'bridge'                    (-> HostConfig.NetworkMode)
+ *  - volumes: [{ hostPath, containerPath, readOnly? }]  (-> Binds)
+ *  - gpu: 'nvidia' | 'none'               (-> DeviceRequests + NVIDIA_* env)
+ */
+export function buildCreateOptions(body: any): Docker.ContainerCreateOptions {
+  const {
+    name,
+    image,
+    ports,
+    env,
+    environment,
+    volumes,
+    restartPolicy,
+    resourceLimits,
+    privileged,
+    cpuCores,
+    memoryMb,
+    network,
+    gpu,
+    capabilities,
+    devices,
+    labels,
+  } = body || {};
+
+  // Ports
+  const portBindings: Record<string, any> = {};
+  const exposedPorts: Record<string, object> = {};
+  if (Array.isArray(ports)) {
+    for (const port of ports) {
+      if (!port || !port.containerPort) continue;
+      const protocol = (port.protocol || 'tcp').toLowerCase();
+      const key = `${port.containerPort}/${protocol}`;
+      const hostPort = port.hostPort || port.containerPort;
+      portBindings[key] = [{ HostPort: String(hostPort) }];
+      exposedPorts[key] = {};
+    }
+  }
+
+  // Environment
+  const envMap = new Map<string, string>();
+  const addEnv = (k: unknown, v: unknown) => {
+    if (typeof k !== 'string' || !k.trim()) return;
+    envMap.set(k.trim(), v === undefined || v === null ? '' : String(v));
+  };
+  if (Array.isArray(env)) {
+    for (const item of env) {
+      if (typeof item === 'string') {
+        const idx = item.indexOf('=');
+        if (idx > 0) addEnv(item.slice(0, idx), item.slice(idx + 1));
+      } else if (item && typeof item === 'object') {
+        addEnv(item.name ?? item.key, item.value);
+      }
+    }
+  } else if (env && typeof env === 'object') {
+    for (const [k, v] of Object.entries(env)) addEnv(k, v);
+  }
+  if (Array.isArray(environment)) {
+    for (const item of environment) {
+      if (item && typeof item === 'object') addEnv(item.name ?? item.key, item.value);
+    }
+  }
+
+  // Volumes -> Binds
+  const binds: string[] = [];
+  if (Array.isArray(volumes)) {
+    for (const vol of volumes) {
+      if (typeof vol === 'string') {
+        if (vol.includes(':')) binds.push(vol);
+        continue;
+      }
+      if (!vol || !vol.hostPath || !vol.containerPath) continue;
+      binds.push(`${vol.hostPath}:${vol.containerPath}${vol.readOnly ? ':ro' : ''}`);
+    }
+  }
+
+  // Restart policy
+  let restart: { Name: string; MaximumRetryCount: number } = { Name: 'no', MaximumRetryCount: 0 };
+  if (typeof restartPolicy === 'string' && restartPolicy) {
+    restart = { Name: restartPolicy, MaximumRetryCount: restartPolicy === 'on-failure' ? 5 : 0 };
+  } else if (restartPolicy && typeof restartPolicy === 'object' && restartPolicy.Name) {
+    restart = { Name: restartPolicy.Name, MaximumRetryCount: restartPolicy.MaximumRetryCount || 0 };
+  } else if (restartPolicy && typeof restartPolicy === 'object' && restartPolicy.name) {
+    restart = { Name: restartPolicy.name, MaximumRetryCount: restartPolicy.maxRetryCount || 0 };
+  }
+
+  const hostConfig: any = {
+    PortBindings: portBindings,
+    Binds: binds,
+    RestartPolicy: restart,
+  };
+
+  if (privileged) hostConfig.Privileged = true;
+  if (typeof network === 'string' && network.trim()) hostConfig.NetworkMode = network.trim();
+  if (Array.isArray(capabilities) && capabilities.length) hostConfig.CapAdd = capabilities;
+  if (Array.isArray(devices) && devices.length) hostConfig.Devices = devices;
+
+  // Resources (flat shape)
+  if (cpuCores !== undefined && cpuCores !== null && Number(cpuCores) > 0) {
+    hostConfig.NanoCpus = Math.round(Number(cpuCores) * 1e9);
+  }
+  if (memoryMb !== undefined && memoryMb !== null && Number(memoryMb) > 0) {
+    hostConfig.Memory = Math.round(Number(memoryMb) * 1024 * 1024);
+  }
+
+  // Resources (legacy nested shape)
+  if (resourceLimits && typeof resourceLimits === 'object') {
+    if (resourceLimits.memoryLimit) hostConfig.Memory = parseMemoryValue(resourceLimits.memoryLimit);
+    if (resourceLimits.memoryReservation) hostConfig.MemoryReservation = parseMemoryValue(resourceLimits.memoryReservation);
+    if (resourceLimits.cpuLimit) hostConfig.NanoCpus = Math.round(parseFloat(resourceLimits.cpuLimit) * 1e9);
+    if (resourceLimits.cpuShares) hostConfig.CpuShares = Math.round(parseFloat(resourceLimits.cpuShares) * 1024);
+  }
+
+  // GPU passthrough
+  if (gpu === 'nvidia' || gpu === true) {
+    hostConfig.DeviceRequests = [{ Driver: 'nvidia', Count: -1, Capabilities: [['gpu']] }];
+    if (!envMap.has('NVIDIA_VISIBLE_DEVICES')) envMap.set('NVIDIA_VISIBLE_DEVICES', 'all');
+    if (!envMap.has('NVIDIA_DRIVER_CAPABILITIES')) envMap.set('NVIDIA_DRIVER_CAPABILITIES', 'all');
+  }
+
+  const options: Docker.ContainerCreateOptions = {
+    Image: image,
+    name,
+    Env: Array.from(envMap.entries()).map(([k, v]) => `${k}=${v}`),
+    ExposedPorts: exposedPorts,
+    HostConfig: hostConfig,
+  };
+  if (labels && typeof labels === 'object') options.Labels = labels;
+
+  return options;
+}
+
+/**
+ * NOTE for index.ts wiring: pass the ArrayService as the 2nd argument so container
+ * mutations are refused while the array is stopped:
+ *
+ *   createDockerRouter(dockerService, arrayService)
+ *
+ * Omitting it keeps the previous behaviour (no gating).
+ */
+export function createDockerRouter(dockerService: DockerService, arrayService?: ArrayStateProvider): Router {
   const router = Router();
+  const gate = requireArrayRunning(arrayService);
 
   router.get('/containers', async (req: AuthRequest, res: Response) => {
     try {
@@ -38,7 +236,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
     }
   });
 
-  router.post('/containers/:id/start', async (req: AuthRequest, res: Response) => {
+  router.post('/containers/:id/start', gate, async (req: AuthRequest, res: Response) => {
     try {
       await dockerService.startContainer(req.params.id);
       res.json({ success: true });
@@ -57,7 +255,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
     }
   });
 
-  router.post('/containers/:id/restart', async (req: AuthRequest, res: Response) => {
+  router.post('/containers/:id/restart', gate, async (req: AuthRequest, res: Response) => {
     try {
       const timeout = req.body.timeout || 10;
       await dockerService.restartContainer(req.params.id, timeout);
@@ -73,7 +271,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
       await dockerService.removeContainer(req.params.id, force);
       res.json({ success: true });
     } catch (error) {
-      res.status(500).json({ error: String(error) });
+      sendError(res, error);
     }
   });
 
@@ -95,7 +293,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
     }
   });
 
-  router.post('/images/pull', async (req: AuthRequest, res: Response) => {
+  router.post('/images/pull', gate, async (req: AuthRequest, res: Response) => {
     try {
       const { imageRef } = req.body;
       if (!imageRef) {
@@ -145,96 +343,40 @@ export function createDockerRouter(dockerService: DockerService): Router {
     }
   });
 
-  router.post('/containers/create', async (req: AuthRequest, res: Response) => {
+  router.post('/containers/create', gate, async (req: AuthRequest, res: Response) => {
     try {
-      const { name, image, ports, env, volumes, restartPolicy, resourceLimits, privileged } = req.body;
+      const { name, image } = req.body || {};
 
       if (!name || !image) {
         res.status(400).json({ error: 'Container name and image are required' });
         return;
       }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(String(name))) {
+        res.status(400).json({ error: 'Invalid container name' });
+        return;
+      }
 
-      // Pull image first
+      // Pull image first (ignore failures; the image may already exist locally)
       try {
         await dockerService.pullImage(image);
       } catch {
         // Image might already exist
       }
 
-      // Prepare port bindings
-      const portBindings: Record<string, any> = {};
-      const exposedPorts: Record<string, object> = {};
+      const createOptions = buildCreateOptions(req.body);
 
-      if (ports && Array.isArray(ports)) {
-        for (const port of ports) {
-          const key = `${port.containerPort}/${port.protocol || 'tcp'}`;
-          portBindings[key] = [{ HostPort: String(port.hostPort || port.containerPort) }];
-          exposedPorts[key] = {};
-        }
-      }
-
-      // Prepare environment variables
-      const envArray: string[] = [];
-      if (env && typeof env === 'object') {
-        for (const [key, value] of Object.entries(env)) {
-          envArray.push(`${key}=${value}`);
-        }
-      }
-
-      // Prepare volume bindings
-      const binds: string[] = [];
-      if (volumes && Array.isArray(volumes)) {
-        for (const vol of volumes) {
-          binds.push(`${vol.hostPath}:${vol.containerPath}${vol.readOnly ? ':ro' : ''}`);
-        }
-      }
-
-      // Prepare container options
       const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-
-      const createOptions: any = {
-        Image: image,
-        name,
-        Env: envArray,
-        HostConfig: {
-          PortBindings: portBindings,
-          Binds: binds,
-          RestartPolicy: restartPolicy || { Name: 'no', MaximumRetryCount: 0 },
-        },
-        ExposedPorts: exposedPorts,
-      };
-
-      // Add privileged mode if needed
-      if (privileged) {
-        createOptions.HostConfig.Privileged = true;
-      }
-
-      // Add resource limits
-      if (resourceLimits) {
-        if (resourceLimits.memoryLimit) {
-          createOptions.HostConfig.Memory = parseMemoryValue(resourceLimits.memoryLimit);
-        }
-        if (resourceLimits.memoryReservation) {
-          createOptions.HostConfig.MemoryReservation = parseMemoryValue(resourceLimits.memoryReservation);
-        }
-        if (resourceLimits.cpuLimit) {
-          createOptions.HostConfig.CpuQuota = Math.round(parseFloat(resourceLimits.cpuLimit) * 100000);
-        }
-        if (resourceLimits.cpuShares) {
-          createOptions.HostConfig.CpuShares = Math.round(parseFloat(resourceLimits.cpuShares) * 1024);
-        }
-      }
-
       const container = await docker.createContainer(createOptions);
       await container.start();
 
       res.json({
         success: true,
+        id: container.id,
         containerId: container.id.substring(0, 12),
         containerName: name,
       });
     } catch (error) {
-      res.status(500).json({ error: String(error) });
+      sendError(res, error);
     }
   });
 
@@ -256,13 +398,13 @@ export function createDockerRouter(dockerService: DockerService): Router {
     }
   });
 
-  router.post('/containers/:id/recreate', async (req: AuthRequest, res: Response) => {
+  router.post('/containers/:id/recreate', gate, async (req: AuthRequest, res: Response) => {
     try {
-      const { config } = req.body;
+      const config = req.body?.config ?? req.body ?? {};
       const newContainerId = await dockerService.recreateContainer(req.params.id, config);
       res.json({ success: true, containerId: newContainerId });
     } catch (error) {
-      res.status(500).json({ error: String(error) });
+      sendError(res, error);
     }
   });
 
@@ -286,7 +428,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
     }
   });
 
-  router.post('/compose/up', async (req: AuthRequest, res: Response) => {
+  router.post('/compose/up', gate, async (req: AuthRequest, res: Response) => {
     try {
       const { yaml } = req.body;
       if (!yaml) {
@@ -321,7 +463,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
       await dockerService.updateSettings(settings);
       res.json({ success: true });
     } catch (error) {
-      res.status(500).json({ error: String(error) });
+      sendError(res, error);
     }
   });
 
@@ -344,7 +486,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
 
       res.end();
     } catch (error) {
-      res.status(500).json({ error: String(error) });
+      sendError(res, error);
     }
   });
 
@@ -364,7 +506,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
       res.write(`data: ${JSON.stringify({ complete: true, backupPath })}\n\n`);
       res.end();
     } catch (error) {
-      res.status(500).json({ error: String(error) });
+      sendError(res, error);
     }
   });
 
@@ -388,7 +530,7 @@ export function createDockerRouter(dockerService: DockerService): Router {
       res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
       res.end();
     } catch (error) {
-      res.status(500).json({ error: String(error) });
+      sendError(res, error);
     }
   });
 
@@ -399,6 +541,16 @@ export function createDockerRouter(dockerService: DockerService): Router {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // Nuke a ghost container: stop daemon, delete its state dir, restart daemon
+  router.post('/containers/:id/nuke', async (req: AuthRequest, res: Response) => {
+    try {
+      const result = await dockerService.nukeContainer(req.params.id);
+      res.json({ success: true, ...result });
+    } catch (error) {
+      sendError(res, error);
     }
   });
 

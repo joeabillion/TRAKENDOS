@@ -278,6 +278,25 @@ export const useDocker = () => {
     }
   }, [])
 
+  /**
+   * Last-resort removal for ghost containers: stops the Docker daemon, deletes the
+   * container's state directory and restarts Docker. Returns the remaining container names.
+   */
+  const nukeContainer = useCallback(async (containerId: string): Promise<{ containers: string[] } | null> => {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.post(`/docker/containers/${containerId}/nuke`, {}, { timeout: 120000 })
+      return { containers: response.data?.containers || [] }
+    } catch (err: any) {
+      const message = err?.response?.data?.error || (err instanceof Error ? err.message : 'Failed to force remove container')
+      setError(message)
+      return null
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
   const migrateStorage = useCallback(
     async (newPath: string, onProgress?: (message: string) => void): Promise<boolean> => {
       setLoading(true)
@@ -287,7 +306,7 @@ export const useDocker = () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+            Authorization: `Bearer ${localStorage.getItem('auth-token') || ''}`,
           },
           body: JSON.stringify({ newPath }),
         })
@@ -341,7 +360,7 @@ export const useDocker = () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+            Authorization: `Bearer ${localStorage.getItem('auth-token') || ''}`,
           },
           body: JSON.stringify({ destPath }),
         })
@@ -398,7 +417,7 @@ export const useDocker = () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+            Authorization: `Bearer ${localStorage.getItem('auth-token') || ''}`,
           },
           body: JSON.stringify({ backupPath }),
         })
@@ -515,6 +534,7 @@ export const useDocker = () => {
     getVolumes,
     removeVolume,
     forceRemoveContainer,
+    nukeContainer,
     migrateStorage,
     fullBackup,
     fullRestore,

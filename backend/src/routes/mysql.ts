@@ -2,6 +2,23 @@ import { Router, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { MysqlService } from '../services/mysqlService';
 
+const IDENT_RE = /^[A-Za-z0-9_]+$/;
+
+/**
+ * Split a user param that may be sent as "user" (host in body/query) or "user@host".
+ */
+function parseUserParam(param: string, hostHint: unknown): { user: string; host: string } | null {
+  let user = param;
+  let host = typeof hostHint === 'string' && hostHint ? hostHint : '';
+  if (!host && param.includes('@')) {
+    const at = param.lastIndexOf('@');
+    user = param.slice(0, at);
+    host = param.slice(at + 1);
+  }
+  if (!user || !host) return null;
+  return { user, host };
+}
+
 export function createMysqlRouter(mysqlService: MysqlService): Router {
   const router = Router();
 
@@ -102,6 +119,45 @@ export function createMysqlRouter(mysqlService: MysqlService): Router {
     }
   });
 
+  // Full schema (DESCRIBE + indexes + SHOW CREATE TABLE)
+  router.get('/databases/:db/tables/:table/schema', async (req: AuthRequest, res: Response) => {
+    const { db, table } = req.params;
+    if (!IDENT_RE.test(db) || !IDENT_RE.test(table)) {
+      res.status(400).json({ error: 'Invalid database or table name' });
+      return;
+    }
+    try {
+      const schema = await mysqlService.describeTable(db, table);
+      res.json(schema);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  // Paginated table rows: ?limit=100&offset=0
+  router.get('/databases/:db/tables/:table/data', async (req: AuthRequest, res: Response) => {
+    const { db, table } = req.params;
+    if (!IDENT_RE.test(db) || !IDENT_RE.test(table)) {
+      res.status(400).json({ error: 'Invalid database or table name' });
+      return;
+    }
+    const limit = req.query.limit !== undefined ? parseInt(String(req.query.limit), 10) : 100;
+    const offset = req.query.offset !== undefined ? parseInt(String(req.query.offset), 10) : 0;
+    if (Number.isNaN(limit) || Number.isNaN(offset) || limit < 1 || offset < 0) {
+      res.status(400).json({ error: 'limit must be >= 1 and offset >= 0' });
+      return;
+    }
+    try {
+      const [schema, result] = await Promise.all([
+        mysqlService.describeTable(db, table),
+        mysqlService.getTableData(db, table, limit, offset),
+      ]);
+      res.json({ schema, ...result });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
   // Query endpoint
   router.post('/query', async (req: AuthRequest, res: Response) => {
     try {
@@ -143,12 +199,12 @@ export function createMysqlRouter(mysqlService: MysqlService): Router {
 
   router.delete('/users/:user', async (req: AuthRequest, res: Response) => {
     try {
-      const { host } = req.body;
-      if (!host) {
+      const parsed = parseUserParam(req.params.user, req.body?.host ?? req.query.host);
+      if (!parsed) {
         res.status(400).json({ error: 'Host required' });
         return;
       }
-      await mysqlService.dropUser(req.params.user, host);
+      await mysqlService.dropUser(parsed.user, parsed.host);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: String(error) });
@@ -171,12 +227,12 @@ export function createMysqlRouter(mysqlService: MysqlService): Router {
 
   router.get('/users/:user/grants', async (req: AuthRequest, res: Response) => {
     try {
-      const { host } = req.query;
-      if (!host) {
+      const parsed = parseUserParam(req.params.user, req.query.host);
+      if (!parsed) {
         res.status(400).json({ error: 'Host required' });
         return;
       }
-      const grants = await mysqlService.showGrants(req.params.user, host as string);
+      const grants = await mysqlService.showGrants(parsed.user, parsed.host);
       res.json(grants);
     } catch (error) {
       res.status(500).json({ error: String(error) });

@@ -1,9 +1,11 @@
 import React from 'react'
 import { useSystemStats } from '../../hooks/useSystemStats'
+import { SkeletonCard } from '../common/Skeleton'
 import { formatBytes } from '../../utils/formatters'
 
 export const SwapWidget: React.FC = () => {
   const stats = useSystemStats()
+  if (!stats) return <SkeletonCard title="Swap" tiles={0} bodyHeight={60} className="h-full" />
   const mem = stats?.memory
   const swapTotal = mem?.swapTotal || 0
   const swapUsed = mem?.swapUsed || 0

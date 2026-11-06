@@ -176,7 +176,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      await api.delete(`/database/databases/${name}`)
+      await api.delete(`/mysql/databases/${encodeURIComponent(name)}`)
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to drop database'
@@ -192,7 +192,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get(`/database/databases/${database}/tables`)
+      const response = await api.get(`/mysql/databases/${encodeURIComponent(database)}/tables`)
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch tables'
@@ -207,7 +207,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get(`/database/databases/${database}/tables/${table}/schema`)
+      const response = await api.get(`/mysql/databases/${encodeURIComponent(database)}/tables/${encodeURIComponent(table)}/schema`)
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch table schema'
@@ -223,7 +223,7 @@ export const useMysql = () => {
       setLoading(true)
       setError(null)
       try {
-        const response = await api.get(`/database/databases/${database}/tables/${table}/data`, {
+        const response = await api.get(`/mysql/databases/${encodeURIComponent(database)}/tables/${encodeURIComponent(table)}/data`, {
           params: { limit, offset },
         })
         return response.data
@@ -294,7 +294,7 @@ export const useMysql = () => {
     try {
       // Use encodeURIComponent to safely encode the user@host portion of the URL
       const encodedUser = encodeURIComponent(`${username}@${host}`)
-      await api.delete(`/database/users/${encodedUser}`)
+      await api.delete(`/mysql/users/${encodedUser}`, { data: { host } })
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to drop user'
@@ -311,7 +311,7 @@ export const useMysql = () => {
     try {
       // Use encodeURIComponent to safely encode the user@host portion of the URL
       const encodedUser = encodeURIComponent(`${username}@${host}`)
-      const response = await api.get(`/database/users/${encodedUser}/grants`)
+      const response = await api.get(`/mysql/users/${encodedUser}/grants`, { params: { host } })
       return response.data
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch grants'
@@ -342,7 +342,7 @@ export const useMysql = () => {
     setLoading(true)
     setError(null)
     try {
-      await api.post(`/database/processes/${id}/kill`)
+      await api.post(`/mysql/processes/${id}/kill`)
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to kill process'

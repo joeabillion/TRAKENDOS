@@ -16,6 +16,7 @@ interface DeployConfig {
   volumes: Array<{ hostPath: string; containerPath: string }>
   resources?: { cpuCores?: number; memoryMb?: number }
   restartPolicy: 'no' | 'always' | 'unless-stopped' | 'on-failure'
+  gpu: 'nvidia' | 'none'
 }
 
 export const AppDeployDialog: React.FC<AppDeployDialogProps> = ({ app, onClose, onDeploy }) => {
@@ -26,6 +27,7 @@ export const AppDeployDialog: React.FC<AppDeployDialogProps> = ({ app, onClose, 
     volumes: (app.volumes || []).map((vol) => ({ hostPath: vol.hostPath || '', containerPath: vol.containerPath })),
     resources: app.resources,
     restartPolicy: app.restartPolicy,
+    gpu: app.gpu ? 'nvidia' : 'none',
   })
   const [deploying, setDeploying] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -48,13 +50,17 @@ export const AppDeployDialog: React.FC<AppDeployDialogProps> = ({ app, onClose, 
         volumes: config.volumes,
         restartPolicy: config.restartPolicy,
         ...config.resources,
+        ...(config.gpu !== 'none' && { gpu: config.gpu }),
       }
 
-      await api.post('/docker/containers/create', containerConfig)
-      await api.post(`/docker/containers/${config.containerName}/start`)
-      await onDeploy(config.containerName, containerConfig)
+      // Backend creates AND starts the container, returning { containerId }
+      const response = await api.post('/docker/containers/create', containerConfig)
+      if (!response?.data?.containerId) {
+        throw new Error('Container was created but no id was returned')
+      }
+      await onDeploy(config.containerName, { ...containerConfig, containerId: response.data.containerId })
     } catch (err: any) {
-      setError(err?.response?.data?.message || 'Failed to deploy container')
+      setError(err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Failed to deploy container')
     } finally {
       setDeploying(false)
     }
@@ -358,6 +364,18 @@ export const AppDeployDialog: React.FC<AppDeployDialogProps> = ({ app, onClose, 
               <option value="on-failure">On Failure</option>
             </select>
           </div>
+
+          {/* GPU */}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.gpu === 'nvidia'}
+              onChange={(e) => setConfig((prev) => ({ ...prev, gpu: e.target.checked ? 'nvidia' : 'none' }))}
+              className="rounded accent-trakend-accent"
+            />
+            <span className="text-sm text-trakend-text-primary">NVIDIA GPU passthrough</span>
+            <span className="text-xs text-trakend-text-secondary">(requires nvidia-container-toolkit on the host)</span>
+          </label>
 
           {/* Description */}
           <div className="bg-trakend-dark rounded-lg p-4 border border-trakend-border">

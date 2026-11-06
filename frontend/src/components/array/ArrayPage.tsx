@@ -7,6 +7,25 @@ import {
   RotateCcw, Search, Server
 } from 'lucide-react'
 import api from '../../utils/api'
+import { Button } from '../common/Button'
+import { useToast } from '../common/Toast'
+import { useConfirm } from '../common/ConfirmDialog'
+import { SkeletonCard } from '../common/Skeleton'
+import { EmptyState } from '../common/EmptyState'
+
+/** Pull a human-readable message out of an axios error (never dump raw JSON). */
+function errMsg(err: any, fallback: string): string {
+  const raw = err?.response?.data?.error || err?.response?.data?.message || err?.message
+  if (!raw) return fallback
+  return String(raw).replace(/^Error:\s*/, '')
+}
+
+/** "Failed: <id> (slot 3), <id> (slot 5)" -> ["<id> (slot 3)", "<id> (slot 5)"] */
+function parseFailedSlots(message: string): string[] {
+  const m = message.match(/Failed:\s*(.+)$/i)
+  if (!m) return []
+  return m[1].split(',').map((x) => x.trim()).filter(Boolean)
+}
 
 // ─── Types ────────────────────────────────────────────
 
@@ -146,11 +165,17 @@ const StateBadge: React.FC<{ state: string }> = ({ state }) => {
 // ─── Main Page ────────────────────────────────────────
 
 const ArrayPage: React.FC = () => {
+  const toast = useToast()
+  const confirm = useConfirm()
   const [activeTab, setActiveTab] = useState<'drives' | 'parity' | 'shares' | 'settings'>('drives')
   const [drives, setDrives] = useState<PhysicalDrive[]>([])
   const [summary, setSummary] = useState<ArraySummary | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null) // which action is in flight
+  const [startError, setStartError] = useState<string | null>(null) // last POST /array/start failure
+  const [parityStatus, setParityStatus] = useState<ParityOp | null>(null)
   const [assignDialog, setAssignDialog] = useState<{ drive: PhysicalDrive; open: boolean } | null>(null)
   const [shareDialog, setShareDialog] = useState(false)
   const [newShare, setNewShare] = useState({ name: '', pool: 'array', use_cache: 'no', allocation_method: 'highwater', export_smb: true })
@@ -163,8 +188,19 @@ const ArrayPage: React.FC = () => {
       ])
       setDrives(drivesRes.data)
       setSummary(summaryRes.data)
-    } catch (err) {
-      console.error('Failed to fetch array data:', err)
+      setLoadError(null)
+      // Live progress for building/checking comes from the dedicated status route
+      const ps = summaryRes.data?.config?.parity_state
+      if (ps === 'building' || ps === 'checking' || ps === 'rebuilding' || summaryRes.data?.parity_operation?.status === 'running') {
+        try {
+          const { data } = await api.get('/array/parity/status')
+          setParityStatus(data && data.status !== 'idle' ? data : null)
+        } catch { /* optional */ }
+      } else {
+        setParityStatus(null)
+      }
+    } catch (err: any) {
+      setLoadError(errMsg(err, 'Failed to load array data'))
     } finally {
       setLoading(false)
     }
@@ -176,107 +212,116 @@ const ArrayPage: React.FC = () => {
     return () => clearInterval(interval)
   }, [fetchData])
 
+  /** Run an action with a busy flag and toast on failure. */
+  const run = async (key: string, fn: () => Promise<void>, fallback: string) => {
+    setBusy(key)
+    try {
+      await fn()
+      await fetchData()
+    } catch (err: any) {
+      toast.error(errMsg(err, fallback))
+      throw err
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const scanDrives = async () => {
     setScanning(true)
     try {
       await api.post('/array/drives/scan')
       await fetchData()
+      toast.success('Drive scan complete')
+    } catch (err: any) {
+      toast.error(errMsg(err, 'Drive scan failed'))
     } finally {
       setScanning(false)
     }
   }
 
+  /** Start (or re-start after an error) — the backend mounts every assigned drive. */
   const startArray = async () => {
+    setBusy('start')
+    setStartError(null)
     try {
       await api.post('/array/start')
+      toast.success('Array started')
       await fetchData()
     } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to start array')
+      const msg = errMsg(err, 'Failed to start array')
+      setStartError(msg)
+      toast.error(msg)
+      await fetchData()
+    } finally {
+      setBusy(null)
     }
   }
 
   const stopArray = async () => {
-    if (!confirm('Stop the array? All shares and Docker containers using array storage will be affected.')) return
-    try {
-      await api.post('/array/stop')
-      await fetchData()
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to stop array')
-    }
+    const ok = await confirm({
+      title: 'Stop the array?',
+      message: 'All shares and Docker containers using array storage will lose access until it is started again.',
+      confirmLabel: 'Stop array',
+      variant: 'danger',
+    })
+    if (!ok) return
+    await run('stop', async () => { await api.post('/array/stop') }, 'Failed to stop array').catch(() => {})
   }
 
   const assignDrive = async (driveId: string, role: string, slot?: number) => {
-    try {
+    await run('assign', async () => {
       await api.post('/array/drives/assign', { driveId, role, slot })
       setAssignDialog(null)
-      await fetchData()
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to assign drive')
-    }
+    }, 'Failed to assign drive').catch(() => {})
   }
 
   const unassignDrive = async (driveId: string) => {
-    if (!confirm('Remove this drive from the array?')) return
-    try {
-      await api.post('/array/drives/unassign', { driveId })
-      await fetchData()
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to unassign drive')
-    }
+    const ok = await confirm({ title: 'Remove this drive from the array?', message: 'The drive is not erased; it simply stops being part of the array.', confirmLabel: 'Remove', variant: 'danger' })
+    if (!ok) return
+    await run('unassign', async () => { await api.post('/array/drives/unassign', { driveId }) }, 'Failed to unassign drive').catch(() => {})
   }
 
   const startParitySync = async () => {
-    try {
-      await api.post('/array/parity/sync')
-      await fetchData()
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to start parity sync')
-    }
+    const ok = await confirm({
+      title: 'Start parity sync?',
+      message: 'Parity will be rebuilt from all data drives. This reads every drive end-to-end and can take many hours; the array stays usable.',
+      confirmLabel: 'Start sync',
+      variant: 'warning',
+    })
+    if (!ok) return
+    await run('sync', async () => { await api.post('/array/parity/sync') }, 'Failed to start parity sync').catch(() => {})
   }
 
   const startParityCheck = async (correct: boolean = false) => {
-    try {
-      await api.post('/array/parity/check', { correct })
-      await fetchData()
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to start parity check')
-    }
+    await run(correct ? 'check-correct' : 'check', async () => { await api.post('/array/parity/check', { correct }) }, 'Failed to start parity check').catch(() => {})
   }
 
   const cancelParity = async () => {
-    try {
-      await api.post('/array/parity/cancel')
-      await fetchData()
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to cancel')
-    }
+    const ok = await confirm({ title: 'Cancel the running parity operation?', message: 'Parity will be marked out of date until a sync completes.', confirmLabel: 'Cancel operation', variant: 'danger' })
+    if (!ok) return
+    await run('cancel', async () => { await api.post('/array/parity/cancel') }, 'Failed to cancel').catch(() => {})
   }
 
   const createShare = async () => {
-    try {
+    await run('share', async () => {
       await api.post('/array/shares', newShare)
       setShareDialog(false)
       setNewShare({ name: '', pool: 'array', use_cache: 'no', allocation_method: 'highwater', export_smb: true })
-      await fetchData()
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to create share')
-    }
+    }, 'Failed to create share').catch(() => {})
   }
 
   const deleteShare = async (id: string) => {
-    if (!confirm('Delete this share?')) return
-    try {
-      await api.delete(`/array/shares/${id}`)
-      await fetchData()
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to delete share')
-    }
+    const ok = await confirm({ title: 'Delete this share?', message: 'The share definition is removed. Files on disk are not deleted.', confirmLabel: 'Delete', variant: 'danger' })
+    if (!ok) return
+    await run('delete-share', async () => { await api.delete(`/array/shares/${id}`) }, 'Failed to delete share').catch(() => {})
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <RefreshCw className="w-8 h-8 text-trakend-accent animate-spin" />
+      <div className="p-6 space-y-4 w-full">
+        <SkeletonCard tiles={0} bodyHeight={24} />
+        <SkeletonCard tiles={4} bodyHeight={120} />
+        <SkeletonCard tiles={0} bodyHeight={200} />
       </div>
     )
   }
@@ -284,26 +329,102 @@ const ArrayPage: React.FC = () => {
   const config = summary?.config
   const assignedDrives = drives.filter(d => d.role !== 'unassigned')
   const unassignedDrives = drives.filter(d => d.role === 'unassigned')
-  const parityOp = summary?.parity_operation
+  // Prefer the live status route while an operation is running
+  const parityOp = parityStatus && parityStatus.status === 'running' ? parityStatus : summary?.parity_operation
 
   if (!config) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <RefreshCw className="w-8 h-8 text-trakend-accent animate-spin" />
+      <div className="p-6 w-full">
+        <EmptyState
+          error
+          title="Array service unavailable"
+          description={loadError || 'The backend did not return an array configuration.'}
+          action={<Button variant="primary" icon={<RefreshCw size={14} />} onClick={() => { setLoading(true); fetchData() }}>Retry</Button>}
+        />
       </div>
     )
   }
 
+  const arrayUp = config.state === 'running' || config.state === 'degraded'
+  const unmountedData = arrayUp ? assignedDrives.filter(d => d.role === 'data' && !d.mount_point) : []
+  const failedSlots = startError ? parseFailedSlots(startError) : []
+  const parityIsStale = config.parity_state === 'invalid'
+  const parityWorking = config.parity_state === 'building' || config.parity_state === 'checking' || config.parity_state === 'rebuilding'
+
   return (
-    <div className="space-y-6">
+    <div className="p-4 sm:p-6 space-y-6 w-full">
+      {loadError && (
+        <div className="banner banner-warning rounded-lg border">
+          <AlertTriangle size={16} className="flex-shrink-0" />
+          <span className="flex-1">Live refresh failed: {loadError}. Showing last known state.</span>
+        </div>
+      )}
+
+      {/* Error state: startup aborted — list what failed and offer reconcile */}
+      {config.state === 'error' && (
+        <div className="p-4 bg-trakend-error/10 border border-trakend-error/50 rounded-lg flex items-start gap-3" role="alert">
+          <AlertTriangle className="w-5 h-5 text-trakend-error flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <h3 className="font-semibold text-trakend-error">Array failed to start</h3>
+            <p className="text-sm text-trakend-text-primary mt-0.5">
+              {startError
+                ? startError.replace(/\s*Failed:.*$/i, '')
+                : 'One or more data drives could not be mounted, so the array was not brought online.'}
+            </p>
+            {(failedSlots.length > 0 || unmountedData.length > 0) && (
+              <ul className="mt-2 space-y-1 text-sm">
+                {(failedSlots.length > 0 ? failedSlots : unmountedData.map(d => `${d.model} (${d.device})${d.slot ? ` — slot ${d.slot}` : ''}`)).map((item, i) => (
+                  <li key={i} className="flex items-center gap-2 text-trakend-error/90">
+                    <span className="w-1.5 h-1.5 rounded-full bg-trakend-error flex-shrink-0" />
+                    <code className="text-xs bg-trakend-dark px-1.5 py-0.5 rounded text-trakend-text-primary">{item}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="text-xs text-trakend-text-secondary mt-2">
+              Check cabling / power for the listed drives, run a scan, then reconcile mounts to retry.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 flex-shrink-0">
+            <Button variant="primary" size="sm" icon={<RotateCcw size={14} />} loading={busy === 'start'} onClick={startArray}>
+              Reconcile mounts
+            </Button>
+            <Button variant="secondary" size="sm" icon={<Search size={14} />} loading={scanning} onClick={scanDrives}>
+              Scan drives
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Degraded mode warning banner */}
       {config.state === 'degraded' && (
-        <div className="p-4 bg-orange-500/20 border border-orange-400/50 rounded-lg flex items-center gap-3">
-          <AlertTriangle className="w-5 h-5 text-orange-400 flex-shrink-0" />
-          <div>
-            <h3 className="font-semibold text-orange-300">Array Running in Degraded Mode</h3>
-            <p className="text-sm text-orange-200 mt-0.5">One or more drives are missing or not mounted. Data protection may be compromised.</p>
+        <div className="p-4 bg-trakend-warning/10 border border-trakend-warning/50 rounded-lg flex items-start gap-3" role="alert">
+          <AlertTriangle className="w-5 h-5 text-trakend-warning flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <h3 className="font-semibold text-trakend-warning">Array running in degraded mode</h3>
+            <p className="text-sm text-trakend-text-primary mt-0.5">
+              {unmountedData.length > 0
+                ? `${unmountedData.length} data drive(s) are not mounted: ${unmountedData.map(d => d.slot ? `Disk ${d.slot}` : d.device).join(', ')}. `
+                : 'One or more drives are missing or not mounted. '}
+              Data protection may be compromised.
+            </p>
           </div>
+          <Button variant="secondary" size="sm" icon={<RotateCcw size={14} />} loading={busy === 'start'} onClick={startArray}>
+            Reconcile mounts
+          </Button>
+        </div>
+      )}
+
+      {/* Parity honesty banner */}
+      {parityIsStale && summary && summary.parity_drives > 0 && (
+        <div className="p-3 bg-trakend-warning/10 border border-trakend-warning/40 rounded-lg flex items-center gap-3">
+          <ShieldAlert className="w-5 h-5 text-trakend-warning flex-shrink-0" />
+          <div className="flex-1 text-sm text-trakend-text-primary">
+            <span className="font-semibold text-trakend-warning">Parity out of date</span> — the array is not protected until a parity sync completes.
+          </div>
+          <Button size="sm" variant="primary" icon={<RefreshCw size={14} />} loading={busy === 'sync'} disabled={config.state !== 'running' || parityOp?.status === 'running'} onClick={startParitySync}>
+            Run sync
+          </Button>
         </div>
       )}
 
@@ -320,14 +441,14 @@ const ArrayPage: React.FC = () => {
         </div>
         <div className="flex items-center gap-3">
           <StateBadge state={config.state} />
-          {config.state === 'stopped' ? (
-            <button onClick={startArray} className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors">
-              <Play className="w-4 h-4" /> Start Array
-            </button>
+          {config.state === 'stopped' || config.state === 'error' ? (
+            <Button variant="primary" icon={<Play size={16} />} loading={busy === 'start'} disabled={!!busy && busy !== 'start'} onClick={startArray}>
+              {config.state === 'error' ? 'Retry start' : 'Start Array'}
+            </Button>
           ) : (
-            <button onClick={stopArray} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors">
-              <Square className="w-4 h-4" /> Stop Array
-            </button>
+            <Button variant="danger" icon={<Square size={16} />} loading={busy === 'stop'} disabled={(!!busy && busy !== 'stop') || config.state === 'starting' || config.state === 'stopping'} onClick={stopArray}>
+              Stop Array
+            </Button>
           )}
         </div>
       </div>
@@ -341,7 +462,7 @@ const ArrayPage: React.FC = () => {
               {summary.used_capacity_human} / {summary.total_capacity_human} ({summary.usage_percent}%)
             </span>
           </div>
-          <div className="w-full h-3 bg-trakend-bg rounded-full overflow-hidden">
+          <div className="w-full h-3 bg-trakend-dark rounded-full overflow-hidden">
             <div
               className={`h-full rounded-full transition-all ${
                 summary.usage_percent > 90 ? 'bg-red-500' :
@@ -352,7 +473,9 @@ const ArrayPage: React.FC = () => {
           </div>
           <div className="flex justify-between mt-1 text-xs text-trakend-text-secondary">
             <span>{summary.free_capacity_human} free</span>
-            <span>Parity: {config?.parity_state || 'none'}</span>
+            <span className={parityIsStale ? 'text-trakend-warning' : parityWorking ? 'text-trakend-info-light' : config.parity_state === 'valid' ? 'text-trakend-success' : ''}>
+              Parity: {parityIsStale ? 'out of date — run sync' : parityWorking ? `${config.parity_state}${parityOp?.progress != null ? ` ${parityOp.progress.toFixed(0)}%` : ''}` : config?.parity_state || 'none'}
+            </span>
           </div>
         </div>
       )}
@@ -371,7 +494,7 @@ const ArrayPage: React.FC = () => {
             className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               activeTab === tab.id
                 ? 'bg-trakend-accent text-white'
-                : 'text-trakend-text-secondary hover:text-trakend-text-primary hover:bg-trakend-bg'
+                : 'text-trakend-text-secondary hover:text-trakend-text-primary hover:bg-trakend-dark'
             }`}
           >
             <tab.icon className="w-4 h-4" />
@@ -387,10 +510,9 @@ const ArrayPage: React.FC = () => {
           <div>
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold text-trakend-text-primary">Array Drives</h2>
-              <button onClick={scanDrives} disabled={scanning} className="flex items-center gap-2 px-3 py-1.5 text-sm bg-trakend-surface border border-trakend-border rounded-lg hover:bg-trakend-bg transition-colors">
-                <Search className={`w-4 h-4 ${scanning ? 'animate-spin' : ''}`} />
-                {scanning ? 'Scanning...' : 'Scan Drives'}
-              </button>
+              <Button size="sm" variant="secondary" icon={<Search size={14} />} loading={scanning} onClick={scanDrives}>
+                {scanning ? 'Scanning…' : 'Scan Drives'}
+              </Button>
             </div>
 
             {assignedDrives.length === 0 ? (
@@ -403,19 +525,19 @@ const ArrayPage: React.FC = () => {
               <div className="space-y-2">
                 {/* Parity drives first */}
                 {assignedDrives.filter(d => d.role === 'parity' || d.role === 'parity2').map(drive => (
-                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped'} />
+                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped' || config.state === 'error'} arrayUp={arrayUp} />
                 ))}
                 {/* Then data drives sorted by slot */}
                 {assignedDrives.filter(d => d.role === 'data').sort((a, b) => (a.slot || 0) - (b.slot || 0)).map(drive => (
-                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped'} />
+                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped' || config.state === 'error'} arrayUp={arrayUp} />
                 ))}
                 {/* Cache */}
                 {assignedDrives.filter(d => d.role === 'cache').map(drive => (
-                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped'} />
+                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped' || config.state === 'error'} arrayUp={arrayUp} />
                 ))}
                 {/* Hot spares */}
                 {assignedDrives.filter(d => d.role === 'hot_spare').map(drive => (
-                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped'} />
+                  <DriveRow key={drive.id} drive={drive} onUnassign={() => unassignDrive(drive.id)} arrayStopped={config.state === 'stopped' || config.state === 'error'} arrayUp={arrayUp} />
                 ))}
               </div>
             )}
@@ -431,7 +553,8 @@ const ArrayPage: React.FC = () => {
                     key={drive.id}
                     drive={drive}
                     onAssign={() => setAssignDialog({ drive, open: true })}
-                    arrayStopped={config.state === 'stopped'}
+                    arrayStopped={config.state === 'stopped' || config.state === 'error'}
+                    arrayUp={arrayUp}
                   />
                 ))}
               </div>
@@ -467,7 +590,12 @@ const ArrayPage: React.FC = () => {
               )}
               <div>
                 <h2 className="text-lg font-semibold text-trakend-text-primary">
-                  Parity Status: {config.parity_state?.toUpperCase() || 'NONE'}
+                  {config.parity_state === 'valid' ? 'Parity valid'
+                    : config.parity_state === 'invalid' ? <span className="text-trakend-warning">Parity out of date — run sync</span>
+                    : config.parity_state === 'building' ? 'Building parity…'
+                    : config.parity_state === 'checking' ? 'Checking parity…'
+                    : config.parity_state === 'rebuilding' ? 'Rebuilding drive…'
+                    : 'No parity configured'}
                 </h2>
                 <p className="text-sm text-trakend-text-secondary">
                   {summary?.parity_drives || 0} parity drive(s) assigned
@@ -480,7 +608,7 @@ const ArrayPage: React.FC = () => {
 
             {/* Active parity operation */}
             {parityOp && parityOp.status === 'running' && (
-              <div className="mt-4 p-4 bg-trakend-bg rounded-lg">
+              <div className="mt-4 p-4 bg-trakend-dark rounded-lg">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium text-trakend-text-primary">
                     {parityOp.type === 'sync' ? 'Parity Sync' :
@@ -488,7 +616,7 @@ const ArrayPage: React.FC = () => {
                      parityOp.type === 'rebuild' ? 'Drive Rebuild' : 'Parity Operation'}
                     {parityOp.target_drive && ` — ${parityOp.target_drive}`}
                   </span>
-                  <button onClick={cancelParity} className="text-xs text-red-400 hover:text-red-300">Cancel</button>
+                  <Button size="xs" variant="danger" loading={busy === 'cancel'} onClick={cancelParity}>Cancel</Button>
                 </div>
                 <div className="w-full h-2 bg-trakend-surface rounded-full overflow-hidden">
                   <div className="h-full bg-trakend-accent rounded-full transition-all" style={{ width: `${parityOp.progress || 0}%` }} />
@@ -504,28 +632,25 @@ const ArrayPage: React.FC = () => {
             )}
 
             {/* Parity actions */}
-            <div className="flex gap-3 mt-4">
-              <button
-                onClick={startParitySync}
-                disabled={config.state !== 'running' || parityOp?.status === 'running'}
-                className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <RefreshCw className="w-4 h-4" /> Parity Sync
-              </button>
-              <button
-                onClick={() => startParityCheck(false)}
-                disabled={config.parity_state !== 'valid' || parityOp?.status === 'running'}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Search className="w-4 h-4" /> Check Parity
-              </button>
-              <button
-                onClick={() => startParityCheck(true)}
-                disabled={config.parity_state !== 'valid' || parityOp?.status === 'running'}
-                className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <RotateCcw className="w-4 h-4" /> Check + Correct
-              </button>
+            <div className="flex flex-wrap gap-3 mt-4">
+              <Button variant="primary" icon={<RefreshCw size={16} />} loading={busy === 'sync'}
+                disabled={config.state !== 'running' || parityOp?.status === 'running' || (!!busy && busy !== 'sync')}
+                title={config.state !== 'running' ? 'Array must be running' : undefined}
+                onClick={startParitySync}>
+                Parity Sync
+              </Button>
+              <Button variant="secondary" icon={<Search size={16} />} loading={busy === 'check'}
+                disabled={config.parity_state !== 'valid' || parityOp?.status === 'running' || (!!busy && busy !== 'check')}
+                title={config.parity_state !== 'valid' ? 'Parity must be valid before it can be checked' : undefined}
+                onClick={() => startParityCheck(false)}>
+                Check Parity
+              </Button>
+              <Button variant="secondary" icon={<RotateCcw size={16} />} loading={busy === 'check-correct'}
+                disabled={config.parity_state !== 'valid' || parityOp?.status === 'running' || (!!busy && busy !== 'check-correct')}
+                title={config.parity_state !== 'valid' ? 'Parity must be valid before it can be checked' : undefined}
+                onClick={() => startParityCheck(true)}>
+                Check + Correct
+              </Button>
             </div>
           </div>
 
@@ -548,9 +673,7 @@ const ArrayPage: React.FC = () => {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-trakend-text-primary">User Shares</h2>
-            <button onClick={() => setShareDialog(true)} className="flex items-center gap-2 px-4 py-2 bg-trakend-accent text-white rounded-lg hover:bg-trakend-accent-dark">
-              <Plus className="w-4 h-4" /> New Share
-            </button>
+            <Button variant="primary" icon={<Plus size={16} />} onClick={() => setShareDialog(true)}>New Share</Button>
           </div>
 
           {summary?.shares && summary.shares.length > 0 ? (
@@ -569,9 +692,7 @@ const ArrayPage: React.FC = () => {
                   <div className="flex items-center gap-2">
                     {share.export_smb && <span className="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-400">SMB</span>}
                     {share.export_nfs && <span className="px-2 py-0.5 rounded text-xs bg-green-500/20 text-green-400">NFS</span>}
-                    <button onClick={() => deleteShare(share.id)} className="p-1 text-red-400 hover:text-red-300">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <Button size="sm" variant="ghost" iconOnly aria-label={`Delete share ${share.name}`} loading={busy === 'delete-share'} onClick={() => deleteShare(share.id)} icon={<Trash2 size={16} className="text-trakend-error" />} />
                   </div>
                 </div>
               ))}
@@ -588,13 +709,8 @@ const ArrayPage: React.FC = () => {
 
       {/* ─── Settings Tab ─── */}
       {activeTab === 'settings' && (
-        <ArraySettings config={config} onSave={async (updates) => {
-          try {
-            await api.put('/array/config', updates)
-            await fetchData()
-          } catch (err: any) {
-            alert(err.response?.data?.error || 'Failed to save')
-          }
+        <ArraySettings config={config} saving={busy === 'save'} onSave={async (updates) => {
+          await run('save', async () => { await api.put('/array/config', updates); toast.success('Array settings saved') }, 'Failed to save settings').catch(() => {})
         }} />
       )}
 
@@ -611,7 +727,7 @@ const ArrayPage: React.FC = () => {
                 <button
                   key={role}
                   onClick={() => assignDrive(assignDialog.drive.id, role)}
-                  className="w-full flex items-center justify-between p-3 bg-trakend-bg hover:bg-trakend-border rounded-lg transition-colors"
+                  className="w-full flex items-center justify-between p-3 bg-trakend-dark hover:bg-trakend-border rounded-lg transition-colors"
                 >
                   <div className="flex items-center gap-2">
                     <RoleBadge role={role} />
@@ -647,13 +763,13 @@ const ArrayPage: React.FC = () => {
                   value={newShare.name}
                   onChange={e => setNewShare({ ...newShare, name: e.target.value })}
                   placeholder="e.g., media, backups, documents"
-                  className="w-full px-3 py-2 bg-trakend-bg border border-trakend-border rounded-lg text-trakend-text-primary"
+                  className="w-full px-3 py-2 bg-trakend-dark border border-trakend-border rounded-lg text-trakend-text-primary"
                 />
               </div>
               <div>
                 <label className="block text-sm font-medium text-trakend-text-primary mb-1">Storage Pool</label>
                 <select value={newShare.pool} onChange={e => setNewShare({ ...newShare, pool: e.target.value })}
-                  className="w-full px-3 py-2 bg-trakend-bg border border-trakend-border rounded-lg text-trakend-text-primary">
+                  className="w-full px-3 py-2 bg-trakend-dark border border-trakend-border rounded-lg text-trakend-text-primary">
                   <option value="array">Array (spread across data drives)</option>
                   <option value="cache">Cache Only (SSD)</option>
                 </select>
@@ -661,7 +777,7 @@ const ArrayPage: React.FC = () => {
               <div>
                 <label className="block text-sm font-medium text-trakend-text-primary mb-1">Use Cache</label>
                 <select value={newShare.use_cache} onChange={e => setNewShare({ ...newShare, use_cache: e.target.value })}
-                  className="w-full px-3 py-2 bg-trakend-bg border border-trakend-border rounded-lg text-trakend-text-primary">
+                  className="w-full px-3 py-2 bg-trakend-dark border border-trakend-border rounded-lg text-trakend-text-primary">
                   <option value="no">No — Write directly to array</option>
                   <option value="yes">Yes — Write to cache, mover transfers to array</option>
                   <option value="prefer">Prefer — Use cache if space available</option>
@@ -671,7 +787,7 @@ const ArrayPage: React.FC = () => {
               <div>
                 <label className="block text-sm font-medium text-trakend-text-primary mb-1">Allocation Method</label>
                 <select value={newShare.allocation_method} onChange={e => setNewShare({ ...newShare, allocation_method: e.target.value })}
-                  className="w-full px-3 py-2 bg-trakend-bg border border-trakend-border rounded-lg text-trakend-text-primary">
+                  className="w-full px-3 py-2 bg-trakend-dark border border-trakend-border rounded-lg text-trakend-text-primary">
                   <option value="highwater">High Water — Fill drives evenly</option>
                   <option value="fillup">Fill Up — Fill one drive before moving to next</option>
                   <option value="mostfree">Most Free — Always use drive with most free space</option>
@@ -682,9 +798,9 @@ const ArrayPage: React.FC = () => {
               <button onClick={() => setShareDialog(false)} className="flex-1 py-2 text-sm text-trakend-text-secondary hover:text-trakend-text-primary border border-trakend-border rounded-lg">
                 Cancel
               </button>
-              <button onClick={createShare} disabled={!newShare.name} className="flex-1 py-2 text-sm bg-trakend-accent text-white rounded-lg hover:bg-trakend-accent-dark disabled:opacity-50">
+              <Button variant="primary" className="flex-1" loading={busy === 'share'} disabled={!newShare.name} onClick={createShare}>
                 Create Share
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -700,7 +816,9 @@ const DriveRow: React.FC<{
   onAssign?: () => void
   onUnassign?: () => void
   arrayStopped?: boolean
-}> = ({ drive, onAssign, onUnassign, arrayStopped }) => {
+  /** Array is running/degraded, so data drives are expected to be mounted. */
+  arrayUp?: boolean
+}> = ({ drive, onAssign, onUnassign, arrayStopped, arrayUp }) => {
   const [expanded, setExpanded] = useState(false)
 
   const usagePercent = drive.size_bytes > 0 && (drive.usage_bytes || 0) > 0
@@ -708,11 +826,13 @@ const DriveRow: React.FC<{
     : 0
 
   // Determine drive status indicator
+  const isParity = drive.role === 'parity' || drive.role === 'parity2'
+  const expectMount = !!arrayUp && !isParity && drive.role !== 'unassigned' && drive.role !== 'hot_spare'
   const getStatusIndicator = () => {
-    if (arrayStopped) {
-      return <span className="w-2.5 h-2.5 rounded-full bg-gray-500 flex-shrink-0" title="Array stopped" />
+    if (arrayStopped || drive.role === 'unassigned') {
+      return <span className="w-2.5 h-2.5 rounded-full bg-gray-500 flex-shrink-0" title={arrayStopped ? 'Array stopped' : 'Unassigned'} />
     }
-    if (!drive.mount_point) {
+    if (expectMount && !drive.mount_point) {
       return <span className="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0" title="Not mounted or missing" />
     }
     if (drive.health === 'warning' || drive.health === 'failing') {
@@ -723,7 +843,7 @@ const DriveRow: React.FC<{
 
   return (
     <div className="bg-trakend-surface border border-trakend-border rounded-lg overflow-hidden">
-      <div className="flex items-center gap-4 p-3 cursor-pointer hover:bg-trakend-bg/50" onClick={() => setExpanded(!expanded)}>
+      <div className="flex items-center gap-4 p-3 cursor-pointer hover:bg-trakend-dark/50" onClick={() => setExpanded(!expanded)}>
         {expanded ? <ChevronDown className="w-4 h-4 text-trakend-text-secondary" /> : <ChevronRight className="w-4 h-4 text-trakend-text-secondary" />}
 
         {getStatusIndicator()}
@@ -749,6 +869,12 @@ const DriveRow: React.FC<{
             <span>{drive.size_human}</span>
             <span>{drive.transport.toUpperCase()}</span>
             {drive.rpm > 0 ? <span>{drive.rpm} RPM</span> : <span>SSD</span>}
+            {expectMount && (
+              drive.mount_point
+                ? <span className="text-green-400 font-mono" title="Mounted at">{drive.mount_point}</span>
+                : <span className="text-red-400 font-medium">Not mounted</span>
+            )}
+            {isParity && arrayUp && <span className="text-trakend-text-secondary">raw device (no filesystem)</span>}
             {drive.temperature > 0 && (
               <span className={drive.temperature > 50 ? 'text-orange-400' : ''}>
                 <ThermometerSun className="w-3 h-3 inline mr-0.5" />{Math.round(drive.temperature * 9 / 5 + 32)}°F
@@ -760,7 +886,7 @@ const DriveRow: React.FC<{
         {/* Usage bar for assigned data drives */}
         {drive.role === 'data' && drive.usage_bytes !== undefined && (
           <div className="w-32">
-            <div className="w-full h-1.5 bg-trakend-bg rounded-full overflow-hidden">
+            <div className="w-full h-1.5 bg-trakend-dark rounded-full overflow-hidden">
               <div className={`h-full rounded-full ${usagePercent > 90 ? 'bg-red-500' : 'bg-trakend-accent'}`}
                 style={{ width: `${usagePercent}%` }} />
             </div>
@@ -771,21 +897,20 @@ const DriveRow: React.FC<{
         {/* Actions */}
         <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
           {drive.role === 'unassigned' && onAssign && arrayStopped && (
-            <button onClick={onAssign} className="px-3 py-1 text-xs bg-trakend-accent text-white rounded hover:bg-trakend-accent-dark">
-              Assign
-            </button>
+            <Button size="xs" variant="primary" onClick={onAssign}>Assign</Button>
           )}
           {drive.role !== 'unassigned' && onUnassign && arrayStopped && (
-            <button onClick={onUnassign} className="px-3 py-1 text-xs text-red-400 border border-red-400/30 rounded hover:bg-red-400/10">
-              Remove
-            </button>
+            <Button size="xs" variant="danger" onClick={onUnassign}>Remove</Button>
+          )}
+          {!arrayStopped && (onAssign || onUnassign) && (
+            <span className="text-[10px] text-trakend-text-secondary" title="Stop the array to change assignments">locked while running</span>
           )}
         </div>
       </div>
 
       {/* Expanded details */}
       {expanded && (
-        <div className="px-4 pb-3 border-t border-trakend-border bg-trakend-bg/30">
+        <div className="px-4 pb-3 border-t border-trakend-border bg-trakend-dark/30">
           <div className="grid grid-cols-4 gap-4 py-3 text-xs">
             <div>
               <div className="text-trakend-text-secondary">Serial</div>
@@ -797,8 +922,8 @@ const DriveRow: React.FC<{
             </div>
             <div>
               <div className="text-trakend-text-secondary">Mount Status</div>
-              <div className={drive.mount_point ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
-                {drive.mount_point ? 'Mounted' : 'Not Mounted'}
+              <div className={drive.mount_point ? 'text-green-400 font-medium' : expectMount ? 'text-red-400 font-medium' : 'text-trakend-text-secondary'}>
+                {drive.mount_point ? 'Mounted' : isParity ? 'N/A (parity)' : arrayStopped ? 'Array stopped' : expectMount ? 'Not mounted' : '—'}
               </div>
             </div>
             <div>
@@ -842,8 +967,9 @@ const DriveRow: React.FC<{
 
 const ArraySettings: React.FC<{
   config?: ArrayConfig | null
+  saving?: boolean
   onSave: (updates: Partial<ArrayConfig>) => Promise<void>
-}> = ({ config, onSave }) => {
+}> = ({ config, saving, onSave }) => {
   const [mode, setMode] = useState(config?.mode || 'parity')
   const [spinDown, setSpinDown] = useState(config?.spin_down_delay || 30)
   const [turboWrite, setTurboWrite] = useState(config?.reconstruct_write || false)
@@ -914,7 +1040,9 @@ const ArraySettings: React.FC<{
         </select>
       </div>
 
-      <button
+      <Button
+        variant="primary"
+        loading={saving}
         onClick={() => onSave({
           mode: mode as ArrayConfig['mode'],
           spin_down_delay: spinDown,
@@ -922,10 +1050,9 @@ const ArraySettings: React.FC<{
           auto_start: autoStart,
           parity_check_schedule: paritySchedule,
         })}
-        className="px-6 py-2 bg-trakend-accent text-white rounded-lg hover:bg-trakend-accent-dark"
       >
         Save Settings
-      </button>
+      </Button>
     </div>
   )
 }

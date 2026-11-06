@@ -140,10 +140,16 @@ export interface MayaNotification {
 
 interface WebSocketContextType {
   connected: boolean
+  /** True after the first disconnect while we are retrying. */
+  reconnecting: boolean
+  /** Current retry attempt (0 when connected). */
+  reconnectAttempt: number
   systemStats: SystemStats | null
   logs: LogEntry[]
   mayaNotifications: MayaNotification[]
   sendCommand: (command: string, payload?: Record<string, unknown>) => void
+  /** Force an immediate reconnect attempt (used by the "Retry now" button). */
+  reconnectNow: () => void
   subscribeToDockerEvents: (callback: (event: DockerEvent) => void) => () => void
   subscribeToLogs: (callback: (log: LogEntry) => void) => () => void
   subscribeToMayaNotifications: (callback: (notif: MayaNotification) => void) => () => void
@@ -151,11 +157,32 @@ interface WebSocketContextType {
 
 const WebSocketContext = createContext<WebSocketContextType | undefined>(undefined)
 
-const RECONNECT_INTERVAL = 3000
-const MAX_RECONNECT_ATTEMPTS = 5
+/** Backoff schedule: 1s, 2s, 4s, 8s, then capped at 15s. Retries forever. */
+export const WS_BACKOFF_BASE_MS = 1000
+export const WS_BACKOFF_MAX_MS = 15000
+export function wsBackoffDelay(attempt: number): number {
+  return Math.min(WS_BACKOFF_MAX_MS, WS_BACKOFF_BASE_MS * Math.pow(2, Math.max(0, attempt - 1)))
+}
+
+/**
+ * Build a WebSocket URL for a backend channel and append the auth token as
+ * `?token=<jwt>` — the upgrade handler in the backend verifies it.
+ *
+ *   wsUrl('/ws/stats')                -> ws://host/ws/stats?token=...
+ *   wsUrl(`/ws/terminal/${id}`)       -> ws://host/ws/terminal/<id>?token=...
+ */
+export function wsUrl(path: string, extraParams?: Record<string, string>): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const token = localStorage.getItem('auth-token') || ''
+  const params = new URLSearchParams({ token, ...(extraParams || {}) })
+  const sep = path.includes('?') ? '&' : '?'
+  return `${protocol}//${window.location.host}${path}${sep}${params.toString()}`
+}
 
 export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [connected, setConnected] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
+  const [reconnectAttempt, setReconnectAttempt] = useState(0)
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [mayaNotifications, setMayaNotifications] = useState<MayaNotification[]>([])
@@ -163,27 +190,26 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const everConnectedRef = useRef(false)
+  const unmountedRef = useRef(false)
 
   const dockerEventCallbacksRef = useRef<Set<(event: DockerEvent) => void>>(new Set())
   const logCallbacksRef = useRef<Set<(log: LogEntry) => void>>(new Set())
   const mayaCallbacksRef = useRef<Set<(notif: MayaNotification) => void>>(new Set())
 
-  const getWsUrl = () => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.host
-    return `${protocol}//${host}/ws/stats`
-  }
-
   const connectWebSocket = () => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    if (unmountedRef.current) return
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) return
 
     try {
-      const ws = new WebSocket(getWsUrl())
+      const ws = new WebSocket(wsUrl('/ws/stats'))
 
       ws.onopen = () => {
-        console.log('WebSocket connected')
         setConnected(true)
+        setReconnecting(false)
+        setReconnectAttempt(0)
         reconnectAttemptsRef.current = 0
+        everConnectedRef.current = true
 
         // Subscribe to system stats
         sendCommandViaWs(ws, 'subscribe', { channels: ['system-stats', 'logs', 'docker', 'maya'] })
@@ -198,31 +224,53 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       }
 
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error)
+      ws.onerror = () => {
+        // onclose follows; reconnect is scheduled there
       }
 
-      ws.onclose = () => {
-        console.log('WebSocket disconnected')
+      ws.onclose = (ev) => {
+        if (wsRef.current === ws) wsRef.current = null
         setConnected(false)
-        attemptReconnect()
+        // 4401/4403 are used by the backend for auth failures on upgrade
+        if (ev.code === 4401 || ev.code === 4403 || ev.code === 1008) {
+          localStorage.removeItem('auth-token')
+          window.location.reload()
+          return
+        }
+        scheduleReconnect()
       }
 
       wsRef.current = ws
     } catch (e) {
       console.error('Failed to create WebSocket:', e)
-      attemptReconnect()
+      scheduleReconnect()
     }
   }
 
-  const attemptReconnect = () => {
-    if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-      reconnectAttemptsRef.current++
-      reconnectTimeoutRef.current = setTimeout(() => {
-        console.log(`Reconnecting... (attempt ${reconnectAttemptsRef.current})`)
-        connectWebSocket()
-      }, RECONNECT_INTERVAL)
+  const scheduleReconnect = () => {
+    if (unmountedRef.current) return
+    if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+    reconnectAttemptsRef.current++
+    const attempt = reconnectAttemptsRef.current
+    setReconnecting(true)
+    setReconnectAttempt(attempt)
+    const delay = wsBackoffDelay(attempt)
+    reconnectTimeoutRef.current = setTimeout(() => {
+      reconnectTimeoutRef.current = null
+      connectWebSocket()
+    }, delay)
+  }
+
+  const reconnectNow = () => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
     }
+    if (wsRef.current && wsRef.current.readyState !== WebSocket.OPEN) {
+      try { wsRef.current.close() } catch { /* ignore */ }
+      wsRef.current = null
+    }
+    connectWebSocket()
   }
 
   const handleMessage = (data: Record<string, unknown>) => {
@@ -279,15 +327,27 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }
 
-  // Connect on mount
+  // Connect on mount; reconnect promptly when the tab regains focus / network returns
   useEffect(() => {
+    unmountedRef.current = false
     connectWebSocket()
 
+    const onOnline = () => reconnectNow()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && !wsRef.current) reconnectNow()
+    }
+    window.addEventListener('online', onOnline)
+    document.addEventListener('visibilitychange', onVisible)
+
     return () => {
+      unmountedRef.current = true
+      window.removeEventListener('online', onOnline)
+      document.removeEventListener('visibilitychange', onVisible)
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
       if (wsRef.current) {
+        wsRef.current.onclose = null
         wsRef.current.close()
       }
     }
@@ -295,10 +355,13 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const value: WebSocketContextType = {
     connected,
+    reconnecting,
+    reconnectAttempt,
     systemStats,
     logs,
     mayaNotifications,
     sendCommand,
+    reconnectNow,
     subscribeToDockerEvents,
     subscribeToLogs,
     subscribeToMayaNotifications,
